@@ -35,7 +35,7 @@ FICHE_OK = json.dumps({"objectif": "Un outil de devis", "contraintes": [], "peri
 REFORM_OK = json.dumps({"demande": "demande reformulée", "intention": "", "objet": "", "contraintes": [],
                         "ambiguites": []})
 # Données fictives. Le code postal (seul) est masqué avant tout envoi externe mais ne déclenche pas
-# le profil restrictif (TRIGGER_IGNORED) : il permet de couvrir le masquage du routage de bout en bout.
+# le profil restrictif (hors TRIGGER_KINDS) : il permet de couvrir le masquage du routage de bout en bout.
 EMAIL = "jean.martin@exemple.fr"
 CP = "75011"
 ACCORD = "Autoriser Gemini à reformuler vos messages (texte masqué, contrôle de fuite avant chaque envoi) ? (o/n) "
