@@ -14,6 +14,10 @@ passent par le routeur : RoleLLM pour les rôles locaux, RoleClient pour
 organisateur, worker, relecteur et grand modèle. Le routeur réutilise le même
 limiteur et le même GeminiClient (une seule file), le masqueur de l'application,
 la confirmation o/n de l'utilisateur et un RunLogger pour journaliser chaque choix.
+
+Langage libre (qwen_ui/langage_libre.py) : le routeur est TOUJOURS construit, pour le
+rôle « reformulation » (agent Gemini par défaut, même GeminiClient et même file que le
+reste de l'application). Sans configuration d'agents, il ne remplace aucun autre objet.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ from local_llm import LocalLLM, LocalLLMError, OllamaBackend
 from orchestrator import Orchestrator, RunLogger
 from organizers.gemini import GeminiOrganizer
 from qwen_ui.app import YES, App
+from qwen_ui.langage_libre import FeedbackJournal, LangageLibre, Reformulator
 from rate_limiter import RateLimiter
 from review import ReviewPanel
 from verify.basic import basic_verifier
@@ -187,10 +192,10 @@ def build_components(
         profile=profile, profile_loader=load_profile, profile_names=list_profiles,
         masker_factory=shared_masker)
 
-    if not agents_configured(s, profile):
-        return Components(llm, factory, app_kwargs)  # assemblage d'avant, à l'identique
-
     # ------------------------------------------------- agents interchangeables
+    # Le routeur existe toujours (rôle « reformulation » du langage libre) ; sans configuration
+    # d'agents, il ne remplace aucun des objets d'avant.
+    configured = agents_configured(s, profile)
     gemini_clients: List[GeminiClient] = [client]
 
     def gemini_for(model: str, lim: RateLimiter) -> GeminiClient:
@@ -235,7 +240,8 @@ def build_components(
 
     def personal_data() -> bool:
         prof = current_profile()
-        return bool(prof and prof.personal_data)
+        # Donnée personnelle détectée dans le texte libre : verrou de session, même sans profil restrictif.
+        return bool(prof and prof.personal_data) or bool(app_box and app_box[0].personal_lock)
 
     def declared() -> List[str]:
         prof = current_profile()
@@ -252,6 +258,12 @@ def build_components(
         logger = RunLogger(s.logs_dir, f"agents-{uuid.uuid4().hex[:8]}", log_content=False)
     router = AgentRouter(registry, routes, logger=logger, personal_data=personal_data,
                          masker=_LazyMasker(shared_masker), declared=declared, confirm=confirm)
+    app_kwargs["langage_libre"] = LangageLibre(
+        Reformulator(router, llm), FeedbackJournal((app_state_dir or s.state_dir) / "retours.jsonl"),
+        n_exemples=s.feedback_exemples, profil_perso=s.profil_donnees_perso, producteur=routes["worker"].agent)
+    if not configured:
+        return Components(llm, factory, app_kwargs, None, (), app_box)  # objets d'avant, à l'identique
+
     logger.event("agent_routes", routed=list(routed), routes={
         role: {"agent": r.agent, "difficile": r.difficile, "repli": list(r.repli), "source": r.source}
         for role, r in routes.items()})

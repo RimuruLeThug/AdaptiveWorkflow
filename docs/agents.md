@@ -4,7 +4,9 @@ This page is about the **product** (agents used by the workflow), not about the 
 
 ## Roles
 `organisateur`, `worker`, `relecteur`, `grand_modele` (Gemini by default, Claude possible for the big model) and the Qwen roles
-`interface`, `cadrage`, `routage`, `promesse` (Qwen 3.5 4B) and `format`, `dedup`, `reparation` (Qwen 2.5 3B).
+`reformulation`, `interface`, `cadrage`, `routage`, `promesse` (Qwen 3.5 4B) and `format`, `dedup`, `reparation` (Qwen 2.5 3B).
+
+The `reformulation` role (Gemini by default) rewrites free text for Qwen; it is the only role that can use a once-per-session consent (`/accord`), and only for one provider.
 
 ## Reassign a role
 In `.env`: `AGENT_ROUTAGE=gemini_test,qwen_interface` (main agent, then fallbacks) and optionally `AGENT_ROUTAGE_DIFFICILE=...`.

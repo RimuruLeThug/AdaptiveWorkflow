@@ -28,6 +28,9 @@ un envoi externe. Profil « données personnelles » : tout agent externe est re
 contrôle de fuite avant l'envoi, et confirmation de l'utilisateur (aperçu masqué,
 destinataire nommé, redemandée si le repli change de destinataire) pour tout rôle dont
 le contenu peut dériver du texte libre (rôles Qwen : routage, cadrage, réparation...).
+Seul le rôle « reformulation » (accord_session) accepte, à la place, un accord unique de
+session limité à CE rôle et CE fournisseur (grant/revoke_session_consent), caduc en profil
+« données personnelles » ; masquage et contrôle de fuite restent faits avant chaque envoi.
 Les valeurs réelles sont réinjectées en local par le code.
 
 Quota journalier Gemini épuisé : aucun autre agent Gemini n'est tenté et, faute de repli
@@ -70,6 +73,10 @@ class RoleInfo:
     # ou indirectement : sortie de Qwen reprenant ce texte, JSON à réparer, idées...).
     # Tout envoi externe d'un tel rôle exige la confirmation avec aperçu masqué.
     free_text: bool = False
+    # L'utilisateur peut donner un accord UNIQUE pour la session (un fournisseur, ce rôle seul)
+    # à la place de la confirmation par envoi. Masquage et contrôle de fuite restent faits
+    # avant CHAQUE envoi ; jamais pour un profil « données personnelles ».
+    accord_session: bool = False
 
 
 ROLES: Dict[str, RoleInfo] = {r.name: r for r in (
@@ -85,6 +92,9 @@ ROLES: Dict[str, RoleInfo] = {r.name: r for r in (
     RoleInfo("dedup", "dédoublonnage des idées", "qwen_format", free_text=True),
     # Répare aussi le JSON invalide d'un rôle en texte libre (routage, cadrage...) : même règle.
     RoleInfo("reparation", "réparation d'un JSON invalide", "qwen_format", free_text=True),
+    # Reçoit directement le texte libre : envoi externe seulement après l'accord de session.
+    RoleInfo("reformulation", "reformule le texte libre en demande claire pour Qwen", "gemini",
+             free_text=True, accord_session=True),
 )}
 
 if tuple(ROLES) != tuple(config.AGENT_ROLES):  # garde-fou : une seule liste de rôles
@@ -93,6 +103,9 @@ if tuple(ROLES) != tuple(config.AGENT_ROLES):  # garde-fou : une seule liste de 
 # externe ne doit jamais se faire sans confirmation.
 if any(not r.free_text for r in ROLES.values() if r.default_agent.startswith("qwen")):
     raise RuntimeError("un rôle Qwen doit exiger la confirmation de tout envoi externe (free_text=True)")
+# Garde-fou : l'accord de session ne remplace la confirmation que pour un rôle en texte libre.
+if any(r.accord_session and not r.free_text for r in ROLES.values()):
+    raise RuntimeError("accord_session réservé aux rôles en texte libre")
 
 # Fournisseur technique -> fournisseur au sens de la politique de données (privacy/policy.py).
 PROVIDER_POLICY = {"ollama": "local", "local_openai": "local", "gemini": "gemini", "claude": "claude"}
@@ -808,6 +821,8 @@ class AgentRouter:
         self.confirm = confirm
         self._monotonic = monotonic
         self.journal: List[dict] = []
+        # Accords de session : {(rôle, fournisseur de politique)}. Jamais d'accord global.
+        self._session_consent: set = set()
         # Réparation JSON par le rôle « reparation » (Qwen 2.5 3B par défaut), soumis aux mêmes règles.
         self.repair_llm: Optional[LocalLLM] = (RoleLLM(self, "reparation")
                                                if repair and "reparation" in self.routes else None)
@@ -825,6 +840,37 @@ class AgentRouter:
 
     def role_client(self, role: str) -> "RoleClient":
         return RoleClient(self, role)
+
+    # ------------------------------------------------------- accord de session
+
+    def grant_session_consent(self, role: str, provider: str) -> None:
+        """Accord unique de l'utilisateur pour CE rôle et CE fournisseur, jusqu'à révocation.
+
+        Refusé pour un rôle sans accord_session (la confirmation par envoi reste due) et
+        pour un profil « données personnelles » (PolicyError, avant tout envoi).
+        """
+        info = ROLES.get(role)
+        if info is None or not info.accord_session:
+            raise ValueError(f"rôle « {role} » : accord de session non prévu (confirmation à chaque envoi)")
+        if provider not in POLICY_PROVIDERS or not POLICY_PROVIDERS[provider].external:
+            raise ValueError(f"fournisseur externe attendu : {provider!r}")
+        check_provider(provider, personal_data=self.personal_data())  # lève PolicyError
+        self._session_consent.add((role, provider))
+
+    def revoke_session_consent(self, role: Optional[str] = None) -> None:
+        """Révoque l'accord d'un rôle, ou tous les accords (role=None)."""
+        self._session_consent = {c for c in self._session_consent if role is not None and c[0] != role}
+
+    def has_session_consent(self, role: str, provider: str) -> bool:
+        """Lecture seule : jamais d'accord effectif en profil « données personnelles »."""
+        if self.personal_data():
+            return False
+        return (role, provider) in self._session_consent
+
+    def log_choice(self, role: str, agent: Optional[str], result: str, reason: str, **extra) -> None:
+        """Journalise un choix fait hors de call() (repli local décidé par l'appelant...)."""
+        spec = self.registry.spec(agent) if agent and agent in self.registry else None
+        self._log(role, spec, result, reason, attempt=1, **extra)
 
     def _log(self, role: str, spec: Optional[AgentSpec], result: str, reason: str, *, attempt: int,
              duration_s: float = 0.0, **extra) -> None:
@@ -904,6 +950,7 @@ class AgentRouter:
 
         # 1. Politique de données, AVANT tout envoi et pour TOUS les candidats (replis compris).
         if self.personal_data():
+            self.revoke_session_consent()  # profil « données personnelles » : accords caducs (écriture explicite)
             for i, sp in enumerate(specs, 1):
                 if sp.external:
                     self._log(role, sp, "refuse_politique", reason, attempt=i)
@@ -932,9 +979,11 @@ class AgentRouter:
                 try:
                     if outbound is None:
                         outbound = self._mask_external(prompt)
-                    # Confirmation redemandée si le repli bascule vers un autre destinataire externe.
+                    # Confirmation redemandée si le repli bascule vers un autre destinataire externe,
+                    # sauf accord de session donné pour CE rôle et CE fournisseur.
                     if free_text and (sp.provider, sp.model) not in confirmed:
-                        self._confirm_external(role, sp, outbound[1])
+                        if not self.has_session_consent(role, sp.policy_provider):
+                            self._confirm_external(role, sp, outbound[1])
                         confirmed.add((sp.provider, sp.model))
                 except LeakBlocked:
                     self._log(role, sp, "fuite_bloquee", why, attempt=i)

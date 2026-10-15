@@ -151,10 +151,13 @@ qwen_ui/             terminal, fiche, routage, présentation
 profiles/            un dossier par cas d'usage
 agents.py           agents interchangeables : rôles, registre, routage, repli
 docs/                configuration, agents, calibration, interchangeabilité (en anglais)
-tests/               ~380 tests, sans réseau ni modèle réel
+tests/               ~445 tests, sans réseau ni modèle réel
 ```
 
 Aucune clé n'est écrite dans le code ; `.env`, `state/` et `logs/` sont ignorés par git.
+
+## Mode langage libre
+Sans « / » initial, vous pouvez parler librement à Qwen. Un agent `reformulation` (Gemini par défaut, remplaçable, ou Qwen local avec `AGENT_REFORMULATION=qwen_interface`) réécrit votre message en demande claire pour Qwen ; le code n'exécute que des commandes d'une liste blanche et confirme les plus coûteuses. Gemini est sollicité **une seule fois par session** pour reformuler vos messages (texte masqué, contrôle de fuite avant chaque envoi) ; un refus garde tout en local. Le profil est choisi implicitement ; un profil de données personnelles est détecté par le code, prioritaire, révoque l'accord et interdit tout envoi externe. Vous pouvez répondre aux résultats en langage naturel (« je garde la 2, la 1 est trop générique ») : le programme confirme, demande une raison une fois (facultative), l'écrit dans `state/retours.jsonl` (local, masqué, ignoré par git) et donne quelques décisions récentes en exemple à Qwen (jamais en profil de données personnelles). Limites : le détecteur de données personnelles peut avoir des faux positifs, et les retours ne s'appliquent qu'à la dernière revue. Non validé avec de vrais modèles.
 
 ## Feuille de route
 
@@ -162,7 +165,7 @@ La V1 est volontairement limitée. Prévu pour les prochaines versions :
 
 - **V2 :**
   - [x] Agents IA librement interchangeables (`agents.py` : rôles, registre, routage avec repli, entrée de test `gemini_test` ; voir `docs/interchangeabilite.md`). Validé par tests unitaires avec doubles uniquement, pas avec de vrais modèles.
-  - [ ] Interface plus simple pilotée par Qwen.
+  - [x] Interface plus simple pilotée par Qwen : mode langage libre (voir ci-dessus). Validé par tests unitaires avec doubles uniquement, pas avec de vrais modèles.
   - [~] Usage du projet sur lui-même : profil `auto_projet` et `docs/auto_projet.md` préparés, jamais exécutés sur de vrais modèles.
 - [~] Calibrer les seuils depuis de vrais pilotes : seuils centralisés et configurables, méthode dans `docs/calibration.md` ; aucune calibration réelle faite.
 - [~] Backends autres qu'Ollama : abstraction et backend local compatible OpenAI, testés avec des doubles uniquement. Autres plateformes que Windows : non validées, seul Windows est testé.

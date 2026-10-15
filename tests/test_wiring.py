@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 import config
-from agents import AgentRouter, RoleClient, RoleLLM
+from agents import AgentError, AgentRouter, RoleClient, RoleLLM
 from config import GeminiQuota, Settings
 from gemini_client import GeminiClient, HttpResponse
 from local_llm import OllamaBackend
@@ -31,6 +31,14 @@ from tests.test_promise import FakeLLM
 TEST_MODEL = "modele-test-factice"  # nom factice : aucun vrai modèle n'est désigné ni appelé
 ROUTE_OK = json.dumps({"action": "tache", "argument": "trouver des idées", "reponse": ""})
 FICHE_OK = json.dumps({"objectif": "Un outil de devis", "contraintes": [], "perimetre": [], "hors_perimetre": []})
+# Langage libre : reformulation locale par Qwen (accord Gemini refusé ou profil perso).
+REFORM_OK = json.dumps({"demande": "demande reformulée", "intention": "", "objet": "", "contraintes": [],
+                        "ambiguites": []})
+# Données fictives. Le code postal (seul) est masqué avant tout envoi externe mais ne déclenche pas
+# le profil restrictif (TRIGGER_IGNORED) : il permet de couvrir le masquage du routage de bout en bout.
+EMAIL = "jean.martin@exemple.fr"
+CP = "75011"
+ACCORD = "Autoriser Gemini à reformuler vos messages (texte masqué, contrôle de fuite avant chaque envoi) ? (o/n) "
 
 
 class FakeClaude:
@@ -150,13 +158,14 @@ class DefaultUnchangedTest(WiringFixture):
             self.assertIs(app._llm(role), self.llm)
 
     def test_defaut_cadrage_et_routage_par_qwen(self):
-        self.llm.answers.extend([json.dumps({"action": "discussion", "argument": "", "reponse": "bonjour"}),
+        self.llm.answers.extend([REFORM_OK, json.dumps({"action": "discussion", "argument": "", "reponse": "bonjour"}),
                                  FICHE_OK])
-        self.inputs.append("n")
+        self.inputs.extend(["n", "n"])  # accord de reformulation refusé, fiche non validée
         app = self.app(self.components(profile=load_profile("brainstorm")))
         app.handle("salut")
         app.handle("/fiche un outil de devis")
-        self.assertEqual(len(self.llm.calls), 2)
+        self.assertEqual(len(self.llm.calls), 3)  # reformulation locale, routage, cadrage
+        self.assertEqual(self.outputs.count(ACCORD), 1)
         self.assertEqual(self.transport.requests, [])
         self.assertFalse((self.tmp / "logs").exists())  # aucun journal d'agents créé
 
@@ -197,25 +206,52 @@ class ConfiguredRoleTest(WiringFixture):
         self.assertIs(app._llm("cadrage"), self.llm)
         self.assertIsInstance(app._llm("routage"), RoleLLM)
         self.answer(ROUTE_OK)
-        self.inputs.extend(["o", "n"])  # envoi externe confirmé, commande proposée refusée
-        app.handle("écrire à jean.martin@exemple.fr")
+        self.llm.answers.append(REFORM_OK)
+        # accord de reformulation refusé, envoi externe du routage confirmé, commande proposée refusée
+        self.inputs.extend(["n", "o", "n"])
+        app.handle(f"écrire une relance pour le devis du {CP}")
+        self.assertFalse(app._personal())  # donnée non déclencheuse : le routage externe a bien lieu
         sent = self.sent_texts()
         self.assertEqual(len(sent), 1)
-        self.assertNotIn("jean.martin@exemple.fr", sent[0])  # masqué par le masqueur de l'application
+        self.assertNotIn(CP, sent[0])  # masqué par le masqueur de l'application
+        self.assertIn("[CODE_POSTAL_1]", sent[0])
+        preview = next(o for o in self.outputs if "Destinataire" in o)
+        self.assertNotIn(CP, preview)
         self.assertIn(f"/models/{TEST_MODEL}:", self.transport.requests[0]["url"])
         self.assertIn("Envoyer ce texte à un agent externe ? (o/n) ", self.outputs)
         self.assertIn("Commande proposée : /tache trouver des idées", self.outputs)
-        self.assertEqual(self.llm.calls, [])
+        self.assertEqual(len(self.llm.calls), 1)  # reformulation locale seulement
 
-        calls = [e for e in self.logger.events if e["event"] == "agent_call"]
+        calls = [e for e in self.logger.events if e["event"] == "agent_call" and e["role"] == "routage"]
         self.assertEqual([(e["role"], e["agent"], e["result"]) for e in calls], [("routage", "gemini_test", "ok")])
         routes = next(e for e in self.logger.events if e["event"] == "agent_routes")
         self.assertEqual(routes["routes"]["routage"]["source"], "configuration")
-        self.assertNotIn("jean.martin", json.dumps(self.logger.events, ensure_ascii=False))
+        logged = json.dumps(self.logger.events, ensure_ascii=False)
+        self.assertNotIn("relance", logged)  # métadonnées seulement
+        self.assertNotIn(CP, logged)
+
+    def test_routeur_masque_l_email_avant_envoi_apercu_et_journal(self):
+        # Donnée déclencheuse (email) : testée directement sur le routeur d'agents, sans passer par le
+        # texte libre (qui imposerait le profil restrictif et bloquerait tout envoi).
+        c = self.components(self.configured(("routage", "gemini_test")))
+        self.answer(ROUTE_OK)
+        self.inputs.append("o")  # envoi externe confirmé après aperçu
+        res = c.router.call("routage", f"écrire à {EMAIL}")
+        sent = self.sent_texts()
+        self.assertEqual(len(sent), 1)
+        self.assertNotIn(EMAIL, sent[0])
+        self.assertIn("[EMAIL_1]", sent[0])
+        preview = next(o for o in self.outputs if "Destinataire" in o)
+        self.assertNotIn(EMAIL, preview)
+        self.assertIn("[EMAIL_1]", preview)
+        self.assertNotIn(EMAIL, json.dumps(self.logger.events, ensure_ascii=False))
+        self.assertNotIn(EMAIL, json.dumps(c.router.journal, ensure_ascii=False))
+        self.assertEqual(res.agent, "gemini_test")
 
     def test_refus_de_confirmation_rien_n_est_envoye(self):
         c = self.components(self.configured(("routage", "gemini_test")))
-        self.inputs.append("n")
+        self.llm.answers.append(REFORM_OK)
+        self.inputs.extend(["n", "n"])  # accord de reformulation refusé, envoi du routage refusé
         self.app(c).handle("bonjour")
         self.assertEqual(self.transport.requests, [])
         self.assertTrue(any("non confirmé" in o for o in self.outputs))
@@ -290,6 +326,7 @@ class PersonalDataTest(WiringFixture):
                             ("cadrage", "qwen_interface,gemini"))
         c = self.components(s, load_profile("bureautique_fictive"))
         app = self.app(c)
+        self.llm.answers.append(REFORM_OK)  # reformulation locale imposée par le profil
         app.handle("bonjour")  # aucune question : refus avant tout aperçu
         self.assertTrue(any(o.startswith("Refusé par la politique de données") for o in self.outputs))
         for role in ("organisateur", "cadrage"):
@@ -297,7 +334,8 @@ class PersonalDataTest(WiringFixture):
                 c.router.call(role, "p")
         app.handle("/tache une consigne")
         self.assertEqual(self.transport.requests, [])
-        self.assertEqual(self.llm.calls, [])
+        self.assertEqual(len(self.llm.calls), 1)  # la seule reformulation, locale
+        self.assertNotIn(ACCORD, self.outputs)  # jamais d'accord demandé en profil perso
         refused = [e for e in self.logger.events if e.get("result") == "refuse_politique"]
         self.assertTrue(refused and all(e["external"] for e in refused))
 
@@ -305,6 +343,7 @@ class PersonalDataTest(WiringFixture):
         c = self.components(self.configured(("routage", "gemini_test")), load_profile("brainstorm"))
         app = self.app(c)
         app.handle("/profil bureautique_fictive")
+        self.llm.answers.append(REFORM_OK)
         app.handle("bonjour")
         self.assertTrue(any(o.startswith("Refusé par la politique de données") for o in self.outputs))
         self.assertEqual(self.transport.requests, [])
@@ -314,16 +353,37 @@ class ReviewFixesTest(WiringFixture):
     def test_reparation_externe_du_texte_libre_demande_confirmation(self):
         # Qwen (routage par défaut) renvoie un JSON invalide reprenant le texte libre ;
         # le rôle « reparation » confié à Gemini ne l'envoie qu'après confirmation.
+        # (Une donnée personnelle dans le texte libre imposerait le profil restrictif : voir
+        # tests/test_langage_libre.py ; ici le texte n'en contient pas.)
         c = self.components(self.configured(("routage", "qwen_interface"), ("reparation", "gemini_test")))
-        self.llm.answers.append("Commande : tache, écrire à jean.martin@exemple.fr")
-        self.inputs.append("n")  # envoi externe refusé
-        self.app(c).handle("écrire à jean.martin@exemple.fr")
+        self.llm.answers.extend([REFORM_OK, f"Commande : tache, écrire une relance pour le devis du {CP}"])
+        self.inputs.extend(["n", "n"])  # accord de reformulation refusé, envoi externe refusé
+        app = self.app(c)
+        app.handle(f"écrire une relance pour le devis du {CP}")
+        self.assertFalse(app._personal())
         self.assertEqual(self.transport.requests, [])
         self.assertIn("Envoyer ce texte à un agent externe ? (o/n) ", self.outputs)
         preview = next(o for o in self.outputs if "Destinataire" in o)
         self.assertIn("« gemini_test »", preview)
         self.assertIn(TEST_MODEL, preview)
-        self.assertNotIn("jean.martin@exemple.fr", preview)
+        self.assertNotIn(CP, preview)  # masqué dans l'aperçu de la réparation
+        self.assertNotIn(CP, json.dumps(self.logger.events, ensure_ascii=False))
+        calls = [(e["role"], e["agent"], e["result"]) for e in self.logger.events if e["event"] == "agent_call"]
+        self.assertIn(("reparation", "gemini_test", "apercu_refuse"), calls)
+
+    def test_reparation_externe_masque_l_email_dans_l_apercu(self):
+        # Même scénario, donnée déclencheuse testée sur le routeur : Qwen (routage) renvoie un JSON
+        # invalide contenant l'email ; la réparation par gemini_test n'en montre que la version masquée.
+        c = self.components(self.configured(("routage", "qwen_interface"), ("reparation", "gemini_test")))
+        self.llm.answers.append(f"Commande : tache, écrire à {EMAIL}")
+        self.inputs.append("n")  # envoi externe de la réparation refusé
+        with self.assertRaises(AgentError):  # réparation refusée : rien n'est envoyé
+            c.router.call("routage", f"écrire à {EMAIL}", schema={"type": "object", "required": ["action"]})
+        self.assertEqual(self.transport.requests, [])
+        preview = next(o for o in self.outputs if "Destinataire" in o)
+        self.assertIn("« gemini_test »", preview)
+        self.assertNotIn(EMAIL, preview)
+        self.assertNotIn(EMAIL, json.dumps(self.logger.events, ensure_ascii=False))
         calls = [(e["role"], e["agent"], e["result"]) for e in self.logger.events if e["event"] == "agent_call"]
         self.assertIn(("reparation", "gemini_test", "apercu_refuse"), calls)
 
@@ -332,11 +392,12 @@ class ReviewFixesTest(WiringFixture):
         details = [{"@type": "type.googleapis.com/google.rpc.QuotaFailure",
                     "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}]
         self.transport.responses.append(HttpResponse(429, {}, err_body(429, "RESOURCE_EXHAUSTED", details=details)))
-        self.inputs.append("o")
+        self.llm.answers.append(REFORM_OK)
+        self.inputs.extend(["n", "o"])  # accord de reformulation refusé, envoi du routage confirmé
         self.app(c).handle("bonjour")
         self.assertTrue(any(o.startswith("Quota Gemini épuisé pour aujourd'hui") for o in self.outputs))
         self.assertEqual(len(self.transport.requests), 1)  # aucun repli vers l'autre agent Gemini
-        self.assertEqual(self.llm.calls, [])
+        self.assertEqual(len(self.llm.calls), 1)  # la seule reformulation, locale
 
 
 if __name__ == "__main__":
