@@ -1,7 +1,7 @@
 # Configuration reference
 
 Values come from `config.py` (defaults) and can be overridden in `.env` (copy `.env.example`; `.env` is git-ignored).
-Only variable names read by `load_settings()` in `config.py` are listed here.
+Variables are read by `load_settings()` in `config.py` (and `GEMINI_API_KEY` by `gemini_api_key()`).
 
 | Variable | Default | Meaning |
 |---|---|---|

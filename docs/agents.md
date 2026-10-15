@@ -13,12 +13,12 @@ In a profile (`profiles/<name>/profil.json`), optional `agents` key:
 "agents": {"declarations": {"my_agent": {"fournisseur": "ollama", "modele": "...", "hote": "http://localhost:11434"}},
            "roles": {"dedup": "my_agent"}}
 ```
-Providers: `ollama`, `local_openai` (loopback host only), `gemini`, `claude`. Routes are computed at startup from the startup profile.
+Providers: `ollama`, `local_openai` (the `hote` of local providers must be a loopback address), `gemini`, `claude`. Routes are computed at startup from the startup profile.
 
 ## Rules
 - Every Gemini call goes through the single rate-limiter queue (shared quota).
 - A role sent to Gemini or Claude is an external send: masking and leak check first; user confirmation for roles that can carry free text; refused entirely for personal-data profiles, fallbacks included.
-- Each call is logged on the bus log (`agent_call`: role, provider, model, duration, result, reason), without the sent text.
+- Each call is logged on the bus log (`agent_call`: role, provider, model, duration_s, result, reason, plus agent, external and attempt), without the sent text.
 
 ## Add a profile
 Create `profiles/<name>/profil.json` (see `profiles/brainstorm/profil.json`; schema validated by `profiles/loader.py`). No business logic goes in the skeleton. Never put real personal data in a profile or its example data.
