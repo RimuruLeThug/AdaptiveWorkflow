@@ -862,8 +862,8 @@ class AgentRouter:
         self._session_consent = {c for c in self._session_consent if role is not None and c[0] != role}
 
     def has_session_consent(self, role: str, provider: str) -> bool:
+        """Lecture seule : jamais d'accord effectif en profil « données personnelles »."""
         if self.personal_data():
-            self._session_consent.clear()  # profil « données personnelles » : accords caducs
             return False
         return (role, provider) in self._session_consent
 
@@ -950,6 +950,7 @@ class AgentRouter:
 
         # 1. Politique de données, AVANT tout envoi et pour TOUS les candidats (replis compris).
         if self.personal_data():
+            self.revoke_session_consent()  # profil « données personnelles » : accords caducs (écriture explicite)
             for i, sp in enumerate(specs, 1):
                 if sp.external:
                     self._log(role, sp, "refuse_politique", reason, attempt=i)

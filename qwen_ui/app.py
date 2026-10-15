@@ -102,7 +102,6 @@ class App:
         self.complexity_threshold = complexity_threshold
         self.last_escalation: Optional[EscalationResult] = None
         self._decisions_path = Path(state_dir) / "decisions.jsonl"
-        self.refusals: List[dict] = self._load_refusals()
         self._orch: Optional[Orchestrator] = None
         self.profile = profile
         self._profile_loader = profile_loader
@@ -115,6 +114,8 @@ class App:
         # même si le profil restrictif n'a pas pu être chargé. Seul /profil explicite la lève.
         self.personal_lock = False
         self._profile_infos: Optional[List[Tuple[str, str]]] = None
+        # Refus remontés à l'organisateur (après le profil : les déclarés servent au filtrage perso).
+        self.refusals: List[dict] = self._load_refusals()
 
     def _llm(self, role: str) -> LocalLLM:
         """Modèle local du rôle (routage, cadrage, interface) : llm sauf affectation configurée."""
@@ -264,19 +265,34 @@ class App:
             self._out(f"{why} : profil restrictif « {self._ll.profil_perso} » indisponible ; tout envoi "
                       f"externe est bloqué pour la session — {self._state_line()}")
 
-    def _auto_profile(self, name: str) -> None:
-        """Profil choisi par le code (nom déjà vérifié) ; jamais de sortie implicite d'un profil perso."""
-        if self._profile_loader is None or (self.profile and self.profile.name == name):
-            return
+    def _load_profile_or_none(self, name: str) -> Optional[Profile]:
+        if self._profile_loader is None:
+            return None
         try:
-            profile = self._profile_loader(name)
+            return self._profile_loader(name)
         except ProfileError as exc:
             self._out(f"Profil « {name} » ignoré : {exc}")
+            return None
+
+    def _has_results(self) -> bool:
+        return any(r is not None for r in (self.last_report, self.last_dedup, self.last_review))
+
+    def _auto_profile(self, name: str, profile: Optional[Profile] = None) -> None:
+        """Profil choisi par le code (nom déjà vérifié) ; jamais de sortie implicite d'un profil perso.
+
+        Les résultats en cours (run, dédup, revue) sont conservés : seul /profil explicite les efface.
+        """
+        if self._profile_loader is None or (self.profile and self.profile.name == name):
+            return
+        profile = profile or self._load_profile_or_none(name)
+        if profile is None:
             return
         if self._personal() and not profile.personal_data:
             return  # le profil restrictif reste prioritaire : /profil pour en sortir
-        self._set_profile(profile)
-        self._out(f"Profil choisi automatiquement : {self._state_line()}")
+        kept = self._has_results()
+        self._set_profile(profile, keep_results=True)
+        self._out(f"Profil choisi automatiquement : {self._state_line()}"
+                  + (" Résultats en cours conservés." if kept else ""))
 
     def _libre(self, line: str) -> bool:
         """Texte libre : données perso (code) -> reformulation -> routage (Qwen propose, le code valide)."""
@@ -285,10 +301,14 @@ class App:
         kinds = personal_kinds(line, self._declared())
         if kinds:
             self._enter_personal(kinds)
-        # 2. Profil nommé explicitement dans le message (ex. « bureautique_fictive ») : chargé par le code.
+        # 2. Profil demandé explicitement (« passe en bureautique_fictive », « profil auto_projet ») :
+        #    un profil « données personnelles » est chargé tout de suite, AVANT tout envoi ; un autre
+        #    profil seulement après le routage, et jamais pour un retour sur les idées.
         named = explicit_profile(line, names)
-        if named:
-            self._auto_profile(named)
+        named_profile = self._load_profile_or_none(named) if named else None
+        if named_profile is not None and named_profile.personal_data:
+            self._auto_profile(named, named_profile)
+            named_profile = None
         # 3. Reformulation (agent configuré sous accord de session, sinon Qwen local).
         exemples = self._exemples()
         ref = self._ll.reformulator.reformulate(line, personal=self._personal(), ask=self._confirm, out=self._out,
@@ -300,13 +320,15 @@ class App:
                                fiche_context=self.fiche.to_context() if self.fiche else "",
                                profiles=self._profiles(), exemples=exemples, idees=self._ideas_context())
         if proposal.feedback:
-            return self._retour(line, exemples)
+            return self._retour(line, exemples)  # jamais de changement de profil pour un retour
+        if named_profile is not None:
+            self._auto_profile(named, named_profile)
         if proposal.command is None:
             self._out(proposal.reply or "(pas de réponse)")
             return True
         cmd = proposal.command
         target = None
-        if cmd.name in ("tache", "fiche"):
+        if cmd.name in ("tache", "fiche") and named is None:
             target = choose_profile(proposal.profile, names, current=self.profile.name if self.profile else None,
                                     current_personal=self._personal())
         self._out(f"Commande proposée : {cmd.render()}" + (f" (profil : {target})" if target else ""))
@@ -330,7 +352,9 @@ class App:
             self._out("Je n'ai pas compris quelles idées garder ou jeter. Exemple : « je garde la 2, on jette la 1 ».")
             return True
         self._out("J'ai compris : " + render_plan(plan, titles))
-        if plan.ambiguous and not self._confirm("Est-ce bien cela ?"):
+        # Aucune décision persistante sans o/n explicite (« tout » et « jette » compris).
+        question = "Est-ce bien cela ?" if plan.ambiguous else "Appliquer ces décisions ?"
+        if not self._confirm(question):
             self._out("Annulé : aucune décision enregistrée.")
             return True
         items = self._ask_reasons(plan.items, titles)
@@ -358,6 +382,10 @@ class App:
             except (EOFError, KeyboardInterrupt):
                 answer = ""
             reason = clean_reason(answer)
+            # Donnée personnelle dans la raison : détectée par le CODE avant toute écriture ou envoi.
+            kinds = personal_kinds(reason, self._declared()) if reason else []
+            if kinds:
+                self._enter_personal(kinds)
             if reason:
                 out = [replace(it, raison=reason) if it.decision == decision and not it.raison else it for it in out]
         return out
@@ -509,8 +537,10 @@ class App:
     def _context(self) -> str:
         """Fiche projet + refus de l'utilisateur (remontés à l'organisateur)."""
         parts = [self.fiche.to_context()] if self.fiche else []
-        if self.refusals:
-            recent = self.refusals[-20:]
+        # Jamais de refus marqué « données personnelles » ni contenant une donnée détectée.
+        shareable = [r for r in self.refusals if not self._personal_refusal(r)]
+        if shareable:
+            recent = shareable[-20:]
             parts.append("Idées déjà refusées par l'utilisateur (ne pas les reproposer telles quelles) :\n" +
                          "\n".join(f"- {r['titre']}" + (f" (raison : {r['raison']})" if r.get("raison") else "")
                                    for r in recent))
@@ -564,23 +594,45 @@ class App:
     def _apply_decisions(self, ids: List[int], reason: str, decision: str) -> None:
         """Mécanisme commun de /valider, /refuser et des retours en langage libre (numéros déjà validés)."""
         known = {v.idea.id: v for v in self.last_review.verdicts}
+        declared = self._declared()
+        reason_kinds = personal_kinds(reason, declared) if reason else []
+        if reason_kinds and self._ll is not None:
+            self._enter_personal(reason_kinds)
+        if reason_kinds:  # jamais de raison en clair dans decisions.jsonl
+            reason = redact(reason, self._masker_or_none(), declared)
         self._decisions_path.parent.mkdir(parents=True, exist_ok=True)
+        kept_local = False
         with open(self._decisions_path, "a", encoding="utf-8") as f:
             for i in ids:
                 v = known[i]
+                perso = (self._personal() or bool(reason_kinds)
+                         or bool(personal_kinds(str(v.idea.titre or ""), declared)))
                 rec = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                        "review_id": self.last_review.review_id, "idea_id": i, "titre": v.idea.titre,
                        "decision": decision, "raison": reason, "score": v.weighted_score,
-                       "votes": v.approvals, "idea": v.idea.data}
+                       "votes": v.approvals, "idea": v.idea.data, "perso": perso}
                 f.write(json.dumps(rec, ensure_ascii=False) + "\n")
                 if decision == "refusée":
-                    self.refusals.append(rec)
+                    if perso:
+                        kept_local = True  # jamais remonté à l'organisateur
+                    else:
+                        self.refusals.append(rec)
         titles = ", ".join(f"[{i}] {known[i].idea.titre}" for i in ids)
         if decision == "validée":
             self._out(f"Validée(s) : {titles}. Pour faire étudier une idée par le grand modèle : "
                       f"/escalader {ids[0]}")
+        elif kept_local:
+            self._out(f"Refusée(s) : {titles}. Donnée personnelle : ce refus reste local, il ne sera pas "
+                      "transmis à l'organisateur.")
         else:
             self._out(f"Refusée(s) : {titles}. Ce refus sera transmis à l'organisateur au prochain /tache.")
+
+    def _personal_refusal(self, rec: Mapping) -> bool:
+        """Refus à ne jamais transmettre : marqué perso, ou donnée personnelle détectée par le code."""
+        if rec.get("perso"):
+            return True
+        text = f"{rec.get('titre') or ''}\n{rec.get('raison') or ''}"
+        return bool(personal_kinds(text, self._declared()))
 
     def _cmd_valider(self, arg: str) -> None:
         self._decide(arg, "validée")
@@ -597,7 +649,8 @@ class App:
                 rec = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if isinstance(rec, dict) and rec.get("decision") == "refusée" and rec.get("titre"):
+            if (isinstance(rec, dict) and rec.get("decision") == "refusée" and rec.get("titre")
+                    and not self._personal_refusal(rec)):  # jamais de refus perso réinjecté
                 out.append(rec)
         return out
 
@@ -617,18 +670,27 @@ class App:
             return
         profile = self._profile_loader(name)  # lève ProfileError
         self._set_profile(profile)
+        if self.personal_lock:
+            self._filter_refusals()  # sortie du verrou « données personnelles »
         self.personal_lock = False  # choix explicite de l'utilisateur
         mode = (" Profil « données personnelles » : aucun fournisseur externe autorisé, masquage local seulement."
                 if profile.personal_data else "")
         self._out(f"Profil : {profile.name} — {profile.description}{mode}")
 
     def _set_profile(self, profile: Profile, *, keep_results: bool = False) -> None:
+        was_personal = self._personal()
         self.profile = profile
         self._orch = None
         if not keep_results:
             self.last_report = self.last_dedup = self.last_review = None
+        if was_personal or profile.personal_data:
+            self._filter_refusals()  # vers ou depuis un profil « données personnelles »
         if profile.personal_data and self._ll is not None:
             self._ll.reformulator.revoke("profil « données personnelles »")
+
+    def _filter_refusals(self) -> None:
+        """Retire des refus en mémoire ceux marqués perso ou contenant une donnée détectée."""
+        self.refusals = [r for r in self.refusals if not self._personal_refusal(r)]
 
     def _cmd_accord(self, arg: str) -> None:
         if self._ll is None:
@@ -644,7 +706,7 @@ class App:
             if self._personal():
                 self._out("Refusé : profil « données personnelles », aucun envoi externe.")
             else:
-                r.grant()  # sans effet si la reformulation est locale
+                r.grant()  # sans effet si l'agent principal de reformulation est local
                 self._out(r.describe())
         else:
             self._out(r.describe())

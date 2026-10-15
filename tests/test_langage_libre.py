@@ -15,6 +15,7 @@ import config
 from agents import ROLES, AgentRateLimited, AgentRouter, AgentSpec, LocalAgent, build_registry, resolve_routes
 from config import GeminiQuota, Settings
 from gemini_client import GeminiClient, HttpResponse
+from local_llm import LocalLLMError
 from orchestrator import Orchestrator
 from privacy.masker import Masker, PreviewRefused
 from privacy.policy import PolicyError
@@ -554,7 +555,7 @@ class FeedbackAppTest(Fixture):
 
     def test_garde_et_jette_raison_donnee_dans_la_phrase(self):
         app = self.make_review(feedback_json([(2, "garde", ""), (1, "jette", "trop générique")]))
-        self.inputs.append("")  # raison du « garde » : sautée
+        self.inputs.extend(["o", ""])  # décisions confirmées ; raison du « garde » : sautée
         app.handle("je garde la 2, trop générique la 1")
         self.assertIn("J'ai compris : garder [2] Partage ; jeter [1] Scan du frigo (raison : trop générique)",
                       self.outputs)
@@ -564,16 +565,19 @@ class FeedbackAppTest(Fixture):
         self.assertEqual(sorted(self.decisions()), [(1, "refusée", "trop générique"), (2, "validée", "")])
         self.assertEqual([r["titre"] for r in app.refusals], ["Scan du frigo"])  # remonté à l'organisateur
 
-    def test_on_jette_tout_sans_question(self):
+    def test_on_jette_tout_confirme_sans_question_de_raison(self):
         app = self.make_review(feedback_json(tout="jette", raison_tout="hors sujet"))
+        self.inputs.append("o")
         app.handle("on jette tout, hors sujet")
+        self.assertIn("Appliquer ces décisions ? (o/n) ", self.outputs)
+        self.assertIn("« jeter tout » s'applique à toutes les idées non citées", self.text())
         self.assertEqual(self.decisions(), [(1, "refusée", "hors sujet"), (2, "refusée", "hors sujet"),
                                             (3, "refusée", "hors sujet")])
         self.assertFalse(any(o.startswith("Pourquoi") for o in self.outputs))
 
     def test_raison_demandee_une_fois_et_sautable(self):
         app = self.make_review(feedback_json([(1, "jette", ""), (3, "jette", "")]))
-        self.inputs.append("sans raison")
+        self.inputs.extend(["o", "sans raison"])
         app.handle("vire la 1 et la 3")
         self.assertEqual(sum(o.startswith("Pourquoi") for o in self.outputs), 1)
         self.assertEqual(self.decisions(), [(1, "refusée", ""), (3, "refusée", "")])
@@ -599,6 +603,171 @@ class FeedbackAppTest(Fixture):
         self.assertIn("Aucune revue en cours", self.text())
 
 
+# ------------------------------------------------------- correctifs de relecture
+
+
+class PersonalReasonTest(Fixture):
+    """Raison saisie à « Pourquoi garder/jeter ? » : jamais en clair, jamais vers l'organisateur."""
+
+    def decisions_raw(self):
+        return (self.tmp / "app" / "decisions.jsonl").read_text(encoding="utf-8")
+
+    def test_raison_perso_detectee_masquee_et_jamais_transmise(self):
+        app = self.make([reform("avis"), route_json("retour"), feedback_json([(1, "jette", "")])],
+                        roles=FeedbackAppTest.LOCAL)
+        app.last_review = review("Scan du frigo", "Partage")
+        self.inputs.extend(["o", f"le client {EMAIL} n'en veut pas"])
+        app.handle("vire la 1")
+        self.assertIn("Donnée personnelle détectée (EMAIL)", self.text())
+        self.assertTrue(app._personal())
+        self.assertEqual(app.profile.name, "bureautique_fictive")
+        self.assertIsNotNone(app.last_review)  # passage au profil restrictif sans perte des résultats
+        raw = self.decisions_raw()
+        self.assertNotIn(EMAIL, raw)
+        rec = json.loads(raw.splitlines()[0])
+        self.assertTrue(rec["perso"])
+        self.assertEqual(app.refusals, [])
+        self.assertNotIn(EMAIL, app._context())
+        self.assertNotIn("Scan du frigo", app._context())
+        self.assertIn("ce refus reste local", self.text())
+        # Sortie explicite du profil restrictif, puis rechargement : rien n'est réinjecté.
+        app.handle("/profil brainstorm")
+        self.assertEqual(app.refusals, [])
+        again = self.make()
+        self.assertEqual(again.refusals, [])
+        self.assertEqual(again._context(), "")
+
+    def test_refuser_explicite_avec_donnee_perso(self):
+        app = self.make()
+        app.last_review = review("Scan", "Partage")
+        app.handle(f"/refuser 2 voir avec {EMAIL}")
+        self.assertNotIn(EMAIL, self.decisions_raw())
+        self.assertTrue(app.personal_lock or app._personal())
+        self.assertEqual(app.refusals, [])
+        self.assertNotIn(EMAIL, app._context())
+
+    def test_refus_herites_filtres_au_rechargement_et_au_contexte(self):
+        path = self.tmp / "app" / "decisions.jsonl"
+        path.parent.mkdir(parents=True)
+        lines = [{"decision": "refusée", "titre": "Ancien", "raison": f"écrire à {EMAIL}"},  # ancien format
+                 {"decision": "refusée", "titre": "Marqué", "raison": "x", "perso": True},
+                 {"decision": "refusée", "titre": "Propre", "raison": "trop cher"}]
+        path.write_text("\n".join(json.dumps(l, ensure_ascii=False) for l in lines) + "\n", encoding="utf-8")
+        app = self.make()
+        self.assertEqual([r["titre"] for r in app.refusals], ["Propre"])
+        app.refusals.append({"titre": "Injecté", "raison": f"tel {EMAIL}"})  # défense en profondeur
+        ctx = app._context()
+        self.assertIn("Propre (raison : trop cher)", ctx)
+        self.assertNotIn(EMAIL, ctx)
+        self.assertNotIn("Injecté", ctx)
+
+    def test_changement_vers_profil_perso_filtre_les_refus(self):
+        app = self.make()
+        app.refusals = [{"titre": "A", "raison": ""}, {"titre": "B", "raison": "", "perso": True}]
+        app.handle("/profil bureautique_fictive")
+        self.assertEqual([r["titre"] for r in app.refusals], ["A"])
+
+
+class FeedbackConfirmationTest(Fixture):
+    def test_jette_refuse_rien_n_est_enregistre(self):
+        app = self.make([reform("avis"), route_json("retour"), feedback_json([(1, "jette", "trop cher")])],
+                        roles=FeedbackAppTest.LOCAL)
+        app.last_review = review("Scan", "Partage")
+        self.inputs.append("n")
+        app.handle("on jette la 1, trop cher")
+        self.assertIn("Appliquer ces décisions ? (o/n) ", self.outputs)
+        self.assertIn("Annulé : aucune décision enregistrée.", self.outputs)
+        self.assertFalse((self.tmp / "app" / "decisions.jsonl").exists())
+        self.assertFalse(self.journal.path.exists())
+        self.assertEqual(app.refusals, [])
+
+    def test_garde_seule_aussi_confirmee(self):
+        app = self.make([reform("avis"), route_json("retour"), feedback_json([(2, "garde", "utile")])],
+                        roles=FeedbackAppTest.LOCAL)
+        app.last_review = review("Scan", "Partage")
+        self.inputs.append("")  # pas de réponse : non confirmé
+        app.handle("je garde la 2, utile")
+        self.assertFalse((self.tmp / "app" / "decisions.jsonl").exists())
+
+
+class ExplicitProfileTest(Fixture):
+    NAMES = ["auto_projet", "brainstorm", "bureautique_fictive"]
+
+    def test_mots_banals_ignores(self):
+        for text in ("fais un brainstorm sur les recettes", "brainstorm rapide stp",
+                     "un auto projet ?", "les profils sont nombreux"):
+            self.assertIsNone(explicit_profile(text, self.NAMES), text)
+        for text, name in (("passe en profil brainstorm", "brainstorm"), ("utilise auto_projet", "auto_projet"),
+                           ("profil : « auto_projet »", "auto_projet"), ("bascule en mode brainstorm", "brainstorm"),
+                           ("passe en bureautique fictive", "bureautique_fictive")):
+            self.assertEqual(explicit_profile(text, self.NAMES), name, text)
+
+    def test_mot_banal_ne_change_pas_de_profil_ni_les_resultats(self):
+        app = self.make([reform("locale"), route_json("discussion", reponse="ok")], roles=FeedbackAppTest.LOCAL,
+                        profile="auto_projet")
+        app.last_review = review("Scan")
+        app.handle("fais un brainstorm sur les recettes")
+        self.assertEqual(app.profile.name, "auto_projet")
+        self.assertIsNotNone(app.last_review)
+
+    def test_retour_ne_change_jamais_de_profil(self):
+        app = self.make([reform("avis"), route_json("retour"), feedback_json([(1, "garde", "")])],
+                        roles=FeedbackAppTest.LOCAL, profile="auto_projet")
+        app.last_review = review("Scan", "Partage")
+        self.inputs.extend(["n"])
+        app.handle("je garde la 1, et passe en profil brainstorm")
+        self.assertEqual(app.profile.name, "auto_projet")
+        self.assertIsNotNone(app.last_review)
+
+    def test_demande_explicite_conserve_les_resultats(self):
+        app = self.make([reform("locale"), route_json("discussion", reponse="ok")], roles=FeedbackAppTest.LOCAL)
+        sentinel = object()
+        app.last_report, app.last_review = sentinel, review("Scan")
+        app.handle("passe en profil auto_projet")
+        self.assertEqual(app.profile.name, "auto_projet")
+        self.assertIs(app.last_report, sentinel)
+        self.assertIsNotNone(app.last_review)
+        self.assertIn("Résultats en cours conservés.", self.text())
+
+
+class AccordFallbackTest(Fixture):
+    ROLES = (("reformulation", "qwen_interface,gemini_test"),)  # principal local, repli externe
+
+    def test_accord_oui_sans_effet_si_principal_local(self):
+        app = self.make(roles=self.ROLES)
+        app.handle("/accord oui")
+        r = app._ll.reformulator
+        self.assertFalse(r.has_consent())
+        self.assertFalse(self.router.has_session_consent("reformulation", "gemini"))
+        self.assertIn("repli externe possible vers Gemini", self.outputs[-1])
+        self.assertIn("confirmé (o/n)", self.outputs[-1])
+        self.assertNotIn("Accord de session donné", self.text())
+        # Le repli externe reste soumis à la confirmation par envoi : refusée, rien ne part.
+        self.llm.answers.extend([LocalLLMError("hors ligne"), reform("locale")])
+        self.inputs.append("n")
+        r.reformulate("salut", personal=False, ask=lambda q: self.fail("pas de question d'accord"),
+                      out=self.outputs.append)
+        self.assertIn("Envoyer ce texte à un agent externe ? (o/n) ", self.outputs)
+        self.assertEqual(self.transport.requests, [])
+
+
+class SessionConsentReadOnlyTest(unittest.TestCase):
+    def test_lecture_sans_effet_de_bord_revocation_explicite(self):
+        flag = [False]
+        reg, fakes = fake_registry(gemini=[reform("x")])
+        router = router_for(reg, settings(agent_roles=(("reformulation", "gemini"),)), personal_data=lambda: flag[0])
+        router.grant_session_consent("reformulation", "gemini")
+        flag[0] = True
+        self.assertFalse(router.has_session_consent("reformulation", "gemini"))
+        self.assertEqual(router._session_consent, {("reformulation", "gemini")})  # lecture : état intact
+        with self.assertRaises(PolicyError):
+            router.call("reformulation", "p")
+        self.assertEqual(router._session_consent, set())  # révocation explicite dans le chemin d'envoi
+        flag[0] = False
+        self.assertFalse(router.has_session_consent("reformulation", "gemini"))
+        self.assertEqual(fakes["gemini"].prompts, [])
+
+
 # --------------------------------------------------------------- journal et réinjection
 
 
@@ -607,7 +776,7 @@ class JournalTest(Fixture):
         app = self.make([reform("avis"), route_json("retour"), feedback_json([(1, "jette", "")])],
                         roles=FeedbackAppTest.LOCAL)
         app.last_review = review(f"Relancer {EMAIL}")
-        self.inputs.append(f"le client {EMAIL} n'en veut pas")  # raison contenant une donnée fictive
+        self.inputs.extend(["o", f"le client {EMAIL} n'en veut pas"])  # raison contenant une donnée fictive
         app.handle("vire la 1")
         raw = self.journal.path.read_text(encoding="utf-8")
         self.assertNotIn(EMAIL, raw)
@@ -615,8 +784,9 @@ class JournalTest(Fixture):
         self.assertEqual(len(recs), 1)
         r = recs[0]
         self.assertEqual(set(r), {"date", "profil", "perso", "role", "agent", "decision", "idee", "raison"})
+        # La donnée détectée dans la raison impose le profil restrictif : retour marqué perso.
         self.assertEqual((r["profil"], r["perso"], r["role"], r["agent"], r["decision"]),
-                         ("brainstorm", False, "worker", "gemini", "jette"))
+                         ("bureautique_fictive", True, "worker", "gemini", "jette"))
         self.assertIn("[EMAIL_1]", r["raison"])  # masqué par le Masker de l'application
         self.assertNotIn(KEY, raw)
         self.assertEqual(self.journal.path, self.tmp / "app" / "retours.jsonl")

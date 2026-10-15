@@ -152,13 +152,18 @@ class Reformulator:
                 "avant chaque envoi) ?")
 
     def has_consent(self) -> bool:
+        """Accord de session effectif : seulement si l'agent PRINCIPAL est externe (lecture seule)."""
         p = self.external_provider()
-        return bool(p) and self.router.has_session_consent(self.role, p)
+        return bool(p) and self.primary_external() and self.router.has_session_consent(self.role, p)
 
     def grant(self) -> bool:
-        """Accord explicite (/accord oui). Lève PolicyError pour un profil « données personnelles »."""
+        """Accord explicite (/accord oui). Lève PolicyError pour un profil « données personnelles ».
+
+        Sans effet si l'agent principal est local : un repli externe éventuel reste soumis à la
+        confirmation à chaque envoi (aperçu masqué), jamais couvert par un accord de session.
+        """
         p = self.external_provider()
-        if not p:
+        if not p or not self.primary_external():
             return False
         self.router.grant_session_consent(self.role, p)
         self.asked = True
@@ -178,6 +183,10 @@ class Reformulator:
         agent = self.router.routes[self.role].agent
         if not p:
             return f"Reformulation locale ({agent}) : rien n'est envoyé, aucun accord nécessaire."
+        if not self.primary_external():
+            return (f"Reformulation locale ({agent}) ; en cas d'échec, repli externe possible vers "
+                    f"{self.label()} : chaque envoi est alors confirmé (o/n) après aperçu du texte masqué. "
+                    "Aucun accord de session nécessaire ni accordé.")
         if self.has_consent():
             return (f"Accord de session donné : {self.label()} reformule vos messages (agent {agent}, texte "
                     "masqué, contrôle de fuite avant chaque envoi). /accord non pour le révoquer.")
@@ -261,11 +270,23 @@ def personal_kinds(text: str, declared: Iterable[str] = ()) -> List[str]:
 # --------------------------------------------------------------------- profils
 
 
+# Demande explicite de profil : « profil X », ou un verbe de changement suivi de quelques mots
+# de liaison (« passe en X », « utilise le profil X », « bascule en mode X »). Un nom de profil
+# employé comme mot ordinaire (« fais un brainstorm ») ne déclenche rien.
+_SWITCH_VERBS = (r"pass(?:e|er|ez)|bascul(?:e|er|ez)|chang(?:e|er|ez)|utilis(?:e|er|ez)|pren(?:ds|dre|ez)"
+                 r"|met(?:s|tre|tez)|choisi(?:s|r|ssez)|activ(?:e|er|ez)|charg(?:e|er|ez)")
+_LINKS = r"(?:(?:en|au|aux|sur|le|la|l'|vers|à|a|du|de|mode|profil|sous)\s*)"
+_OPEN = r"[\s«\"':]*"
+
+
 def explicit_profile(text: str, names: Sequence[str]) -> Optional[str]:
-    """Profil nommé explicitement dans le texte (« bureautique_fictive » ou « bureautique fictive »)."""
+    """Profil demandé explicitement (« passe en bureautique_fictive », « profil auto_projet »)."""
     for name in sorted(names, key=len, reverse=True):
         for variant in {name, name.replace("_", " ")}:
-            if re.search(rf"(?<!\w){re.escape(variant)}(?!\w)", text, re.IGNORECASE):
+            v = re.escape(variant)
+            pattern = (rf"(?:\bprofil{_OPEN}|\b(?:{_SWITCH_VERBS})\s+{_LINKS}{{0,3}}{_OPEN})"
+                       rf"{v}(?!\w)")
+            if re.search(pattern, text, re.IGNORECASE):
                 return name
     return None
 
@@ -357,6 +378,7 @@ class FeedbackPlan:
     items: List[FeedbackItem] = field(default_factory=list)
     unknown: List[int] = field(default_factory=list)  # numéros proposés absents de la revue : ignorés
     ambiguous: bool = False
+    tout: str = ""  # « garde » / « jette » appliqué à toutes les idées non citées
 
 
 def parse_feedback(doc: dict, known_ids: Sequence[int]) -> FeedbackPlan:
@@ -379,7 +401,8 @@ def parse_feedback(doc: dict, known_ids: Sequence[int]) -> FeedbackPlan:
             if n not in seen:
                 seen[n] = FeedbackItem(n, tout, clean_reason(doc.get("raison_tout", "")))
     items = [seen[n] for n in known if n in seen]
-    return FeedbackPlan(items, unknown, bool(doc.get("ambigu")) or conflict or bool(unknown) or not items)
+    return FeedbackPlan(items, unknown, bool(doc.get("ambigu")) or conflict or bool(unknown) or not items,
+                        tout if tout in ("garde", "jette") else "")
 
 
 def interpret_feedback(llm: LocalLLM, message: str, ideas: Sequence[Tuple[int, str]],
@@ -401,6 +424,9 @@ def render_plan(plan: FeedbackPlan, titles: dict) -> str:
                 f"[{it.id}] {short(titles.get(it.id, ''), 60)}" + (f" (raison : {it.raison})" if it.raison else "")
                 for it in chosen))
     text = " ; ".join(parts) or "rien"
+    if plan.tout:
+        text += (f" — attention : « {'garder' if plan.tout == 'garde' else 'jeter'} tout » s'applique à "
+                 "toutes les idées non citées")
     if plan.unknown:
         text += f" — numéros ignorés (absents de la revue) : {plan.unknown}"
     return text
