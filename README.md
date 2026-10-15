@@ -175,9 +175,9 @@ V1 is deliberately limited. Planned for the next versions:
 - **V2:**
   - [x] Freely swap the AI agents (`agents.py`: roles, registry, routing with fallback, `gemini_test` test entry; see `docs/interchangeabilite.md`). Validated by unit tests with test doubles only, not with real models.
   - [x] A simpler interface driven by Qwen: free-language mode (see below). Validated by unit tests with doubles only, not with real models.
-  - [~] Using the project on itself: profile `auto_projet` and `docs/auto_projet.md` prepared, never run on real models.
-- [~] Calibrating thresholds from real pilot runs: thresholds are centralised and configurable, method in `docs/calibration.md`; no real calibration done yet.
-- [~] Backends other than Ollama: an abstraction and a local OpenAI-compatible backend exist, tested with doubles only. Platforms other than Windows: not validated, only Windows is tested.
+  - [x] Using the project on itself: profile `auto_projet`, run once for real (Gemini + Qwen locally, one short Claude Haiku test); see `docs/auto_projet.md`.
+- [~] Calibrating thresholds from real pilot runs: thresholds are centralised and configurable, and `calibrate.py` suggests values from your own runs (see `docs/calibration.md`); the real calibration still has to be done by the maintainer with enough runs.
+- [~] Backends other than Ollama: an abstraction and a local OpenAI-compatible backend exist, tested with doubles only. Platforms other than Windows: the code has no Windows-specific calls but only Windows is validated.
 
 ## Legal note on profiles
 

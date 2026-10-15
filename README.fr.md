@@ -166,9 +166,9 @@ La V1 est volontairement limitée. Prévu pour les prochaines versions :
 - **V2 :**
   - [x] Agents IA librement interchangeables (`agents.py` : rôles, registre, routage avec repli, entrée de test `gemini_test` ; voir `docs/interchangeabilite.md`). Validé par tests unitaires avec doubles uniquement, pas avec de vrais modèles.
   - [x] Interface plus simple pilotée par Qwen : mode langage libre (voir ci-dessus). Validé par tests unitaires avec doubles uniquement, pas avec de vrais modèles.
-  - [~] Usage du projet sur lui-même : profil `auto_projet` et `docs/auto_projet.md` préparés, jamais exécutés sur de vrais modèles.
-- [~] Calibrer les seuils depuis de vrais pilotes : seuils centralisés et configurables, méthode dans `docs/calibration.md` ; aucune calibration réelle faite.
-- [~] Backends autres qu'Ollama : abstraction et backend local compatible OpenAI, testés avec des doubles uniquement. Autres plateformes que Windows : non validées, seul Windows est testé.
+  - [x] Usage du projet sur lui-même : profil `auto_projet`, exécuté une fois pour de vrai (Gemini + Qwen local, un court test Claude Haiku) ; voir `docs/auto_projet.md`.
+- [~] Calibrer les seuils depuis de vrais pilotes : seuils centralisés et configurables, et `calibrate.py` suggère des valeurs à partir de vos propres runs (voir `docs/calibration.md`) ; la calibration réelle reste à faire par le mainteneur avec assez de runs.
+- [~] Backends autres qu'Ollama : abstraction et backend local compatible OpenAI, testés avec des doubles uniquement. Autres plateformes que Windows : le code n'a pas d'appel propre à Windows, mais seul Windows est validé.
 
 ## Cadre légal des profils
 

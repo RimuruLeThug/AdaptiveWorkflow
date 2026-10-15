@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.0
+- V2 complete: swappable agents, free-language interface, using the project on itself (profile `auto_projet`, one real run with Gemini and local Qwen, short Claude Haiku test).
+- `calibrate.py`: suggests thresholds from your own review logs and decisions (warns on small samples; never writes `.env`).
+- Personal-data trigger relaxed on purpose (only e-mail, IBAN, NIR, phone, birth date switch to the restrictive profile; everything is still masked before any external send). To be tightened in V3.
+- Cleanup: unused imports, stale comments, `brief` references and old "Qwen 5 Go / 2 Go" labels removed.
+- Not done: real threshold calibration (needs many runs), validation on other platforms, real tests of other local backends, Gemini-for-Qwen-role comparison with real calls (`GEMINI_TEST_MODEL` not provided).
+
 ## 1.2.0
 - Free-language mode: `reformulation` role (Gemini by default, swappable; one consent per session; local Qwen fallback), whitelisted routing of free text, implicit profile choice with code-side personal-data detection and session lock, free-language feedback with optional reasons stored in `state/retours.jsonl` and reinjected (masked, bounded) as examples; `/accord` command.
 - Personal-data check on feedback reasons; feedback always confirmed; implicit profile switches keep results.
