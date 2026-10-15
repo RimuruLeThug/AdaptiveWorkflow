@@ -1,6 +1,6 @@
 # AdaptiveWorkflow
 
-> **Version 1 (V1).** This is the first public release. It works and is tested (about 290 unit tests, no network or real model needed), but it is an early version: expect rough edges, and expect thresholds and behavior to be tuned in later versions. See the [Roadmap](#roadmap).
+> **Version 1 (V1).** This is the first public release. It works and is tested (about 380 unit tests, no network or real model needed), but it is an early version: expect rough edges, and expect thresholds and behavior to be tuned in later versions. See the [Roadmap](#roadmap).
 
 **A zero-cost multi-agent orchestration skeleton.** Local models (Qwen through Ollama) and the free Gemini API work together, under the control of plain Python code that makes the decisions. Each user plugs in their own Gemini key and their own local models.
 
@@ -160,7 +160,9 @@ verify/              JSON schema, repair, promise check, haiku.py (disabled)
 privacy/             detection, masking, leak check, encrypted vault, policy
 qwen_ui/             terminal, project sheet, routing, presentation
 profiles/            one folder per use case
-tests/               ~290 tests, no network and no real model required
+agents.py           swappable agents: roles, registry, routing, fallback
+docs/                configuration, agents, calibration, interchangeability
+tests/               ~380 tests, no network and no real model required
 ```
 
 ## Roadmap

@@ -149,7 +149,9 @@ verify/              schéma JSON, réparation, contrôle de promesse, haiku.py 
 privacy/             détection, masquage, contrôle de fuite, coffre chiffré, politique
 qwen_ui/             terminal, fiche, routage, présentation
 profiles/            un dossier par cas d'usage
-tests/               ~290 tests, sans réseau ni modèle réel
+agents.py           agents interchangeables : rôles, registre, routage, repli
+docs/                configuration, agents, calibration, interchangeabilité (en anglais)
+tests/               ~380 tests, sans réseau ni modèle réel
 ```
 
 Aucune clé n'est écrite dans le code ; `.env`, `state/` et `logs/` sont ignorés par git.
