@@ -30,7 +30,10 @@ MINIMAL = {"nom": "traduction", "description": "Traductions", "donnees_personnel
 
 class LoaderTest(unittest.TestCase):
     def test_profils_livres(self):
-        self.assertEqual(list_profiles(), ["brainstorm", "bureautique_fictive"])
+        self.assertEqual(list_profiles(), ["auto_projet", "brainstorm", "bureautique_fictive"])
+        auto = load_profile("auto_projet")
+        self.assertFalse(auto.personal_data)
+        self.assertEqual([w.name for w in auto.workers], ["idees_projet", "relecteur_projet"])
         self.assertEqual(load_profile("brainstorm").workers, tuple(DEFAULT_WORKERS))
         office = load_profile("bureautique_fictive")
         self.assertTrue(office.personal_data)

@@ -1,0 +1,32 @@
+{
+  "nom": "auto_projet",
+  "description": "Utiliser AdaptiveWorkflow sur lui-même : idées d'amélioration, relecture de code et de documentation du projet (code public, aucune donnée personnelle).",
+  "donnees_personnelles": false,
+  "workers": [
+    {
+      "nom": "idees_projet",
+      "description": "Propose des améliorations concrètes du projet (code, tests, documentation) sous forme d'idées courtes en JSON.",
+      "consigne_systeme": "Tu proposes des améliorations pour un projet Python d'orchestration multi-agents à coût zéro (bibliothèque standard, Windows, tests unittest). Chaque idée est courte, concrète et réalisable par une seule personne. Varie les approches : au moins une idée simple, une ambitieuse et une contrarienne. N'écris rien en dehors du JSON demandé. Format : {\"idees\": [{\"titre\": \"...\", \"probleme\": \"...\", \"approche\": \"...\", \"effort\": \"faible|moyen|fort\", \"type\": \"simple|ambitieuse|contrarienne|autre\"}]}",
+      "temperature": 0.9,
+      "schema_sortie": "idees"
+    },
+    {
+      "nom": "relecteur_projet",
+      "description": "Relit un extrait de code ou de documentation du projet et signale défauts, risques et manques de tests.",
+      "consigne_systeme": "Tu es un relecteur rigoureux d'un projet Python. Sur l'extrait fourni : défauts probables, risques, cas limites non testés, incohérences avec la documentation. Distingue les faits des hypothèses et cite l'endroit concerné. Pas de formules creuses.",
+      "temperature": 0.3,
+      "schema_sortie": null
+    }
+  ],
+  "revue": {
+    "seuil": 6.5,
+    "shortlist_min": 5,
+    "shortlist_max": 8
+  },
+  "exemples": [
+    "/profil auto_projet",
+    "/fiche Objectif : améliorer la robustesse du projet. Contraintes : bibliothèque standard ; tests unitaires obligatoires. Périmètre : code et documentation du dépôt. Hors périmètre : données personnelles.",
+    "/tache Utilise idees_projet pour proposer 10 améliorations, dont 2 contrariennes.",
+    "/revue"
+  ]
+}
