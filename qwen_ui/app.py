@@ -317,7 +317,8 @@ class App:
             self._out(f"Demande comprise ({ref.agent}) : {ref.demande}")
         # 4. Routage : Qwen propose une action de la liste blanche et un profil ; le code valide.
         proposal = route_libre(self._llm("routage"), line, reformulation=ref.render() if ref else "",
-                               fiche_context=self.fiche.to_context() if self.fiche else "",
+                               # La fiche n'est pas donnée au routeur : elle contaminait l'argument de la
+                               # commande (testé en réel) ; elle est de toute façon transmise avec /tache.
                                profiles=self._profiles(), exemples=exemples, idees=self._ideas_context())
         if proposal.feedback:
             return self._retour(line, exemples)  # jamais de changement de profil pour un retour

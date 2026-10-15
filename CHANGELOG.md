@@ -4,6 +4,7 @@
 - V2 complete: swappable agents, free-language interface, using the project on itself (profile `auto_projet`, one real run with Gemini and local Qwen, short Claude Haiku test).
 - `calibrate.py`: suggests thresholds from your own review logs and decisions (warns on small samples; never writes `.env`).
 - Personal-data trigger relaxed on purpose (only e-mail, IBAN, NIR, phone, birth date switch to the restrictive profile; everything is still masked before any external send). To be tightened in V3.
+- Fix found in a real run: the saved fiche is no longer given to the free-text router (it leaked an old topic into the proposed command).
 - Cleanup: unused imports, stale comments, `brief` references and old "Qwen 5 Go / 2 Go" labels removed.
 - Not done: real threshold calibration (needs many runs), validation on other platforms, real tests of other local backends, Gemini-for-Qwen-role comparison with real calls (`GEMINI_TEST_MODEL` not provided).
 
