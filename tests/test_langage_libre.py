@@ -896,5 +896,17 @@ class SingleQueueTest(WiringFixture):
         self.assertEqual(ll.reformulator.router.routes["reformulation"].agent, "gemini")
 
 
+class LaxDetectorTest(unittest.TestCase):
+    def test_faux_positifs_courants_ne_declenchent_pas(self):
+        from qwen_ui.langage_libre import personal_kinds
+        for text in ("Une application pour Android TV", "Une API REST pour Paris Habitat", "budget 15000 euros"):
+            self.assertEqual(personal_kinds(text), [], text)
+
+    def test_identifiants_structures_declenchent(self):
+        from qwen_ui.langage_libre import personal_kinds
+        self.assertIn("EMAIL", personal_kinds("écris à jean.martin@exemple.fr"))
+        self.assertIn("TELEPHONE", personal_kinds("appelle le 06 12 34 56 78"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -257,14 +257,15 @@ class Reformulator:
 
 # ------------------------------------------------------- données personnelles
 
-# Un nombre de 5 chiffres seul (budget, quantité...) ne suffit pas à basculer de profil ;
-# il reste masqué avant tout envoi externe comme avant.
-TRIGGER_IGNORED = frozenset({"CODE_POSTAL"})
+# Laxiste volontairement (limite connue, à resserrer en V3) : seuls les identifiants structurés
+# basculent en profil restrictif. Noms, adresses, codes postaux... ne déclenchent rien (trop de faux
+# positifs : « Android TV », « Une API »), mais restent masqués avant tout envoi externe.
+TRIGGER_KINDS = frozenset({"EMAIL", "IBAN", "NIR", "TELEPHONE", "NAISSANCE"})
 
 
 def personal_kinds(text: str, declared: Iterable[str] = ()) -> List[str]:
     """Types de données personnelles détectés par le CODE (détecteurs déterministes)."""
-    return sorted({f.kind for f in detect(text, declared=declared) if f.kind not in TRIGGER_IGNORED})
+    return sorted({f.kind for f in detect(text, declared=declared) if f.kind in TRIGGER_KINDS})
 
 
 # --------------------------------------------------------------------- profils
