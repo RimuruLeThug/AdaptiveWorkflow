@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.1
+- Easy install on Windows: `install.bat` (checks Python 3.11+, installs `tzdata`, creates `.env` from `.env.example`, offers to pull the two Qwen models) and `start.bat`; each release ships a ready-to-unzip archive `AdaptiveWorkflow-vX.Y.Z.zip`.
+- Documentation rewritten (README EN/FR, `docs/architecture.md`, `docs/troubleshooting.md`, `docs/configuration.md`, `docs/agents.md`), checked against the code.
+- `.gitattributes`: `.bat` files are checked out with CRLF line endings.
+
 ## 2.0.0
 - V2 complete: swappable agents, free-language interface, using the project on itself (profile `auto_projet`, one real run with Gemini and local Qwen, short Claude Haiku test).
 - `calibrate.py`: suggests thresholds from your own review logs and decisions (warns on small samples; never writes `.env`).
