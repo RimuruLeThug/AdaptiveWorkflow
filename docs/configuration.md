@@ -16,6 +16,7 @@ Variables are read by `load_settings()` in `config.py` (and `GEMINI_API_KEY` by 
 | `ORCH_STATE_DIR`, `ORCH_LOGS_DIR`, `PROFILE` | `state/`, `logs/`, `brainstorm` | folders and startup profile |
 | `GEMINI_TEST_MODEL` | empty | model of the `gemini_test` agent (empty = unavailable) |
 | `AGENT_<ROLE>`, `AGENT_<ROLE>_DIFFICILE` | none | role reassignment, `agent[,fallback...]` |
+| `AGENT_REFORMULATION`, `PROFIL_DONNEES_PERSO`, `FEEDBACK_EXEMPLES` | none, `bureautique_fictive`, 5 | free-language mode: rephrasing agent, restrictive profile, number of feedback examples (0 = off) |
 | `AGENT_SEUIL_CARACTERES`, `AGENT_SEUIL_SCORE`, `AGENT_DECLARATIONS` | 6000, 5, empty | simple/hard routing criterion, extra agents (JSON) |
 
 Only Windows is validated.

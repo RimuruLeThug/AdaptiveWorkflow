@@ -1,6 +1,6 @@
 # AdaptiveWorkflow
 
-> **Version 1 (V1).** This is the first public release. It works and is tested (about 380 unit tests, no network or real model needed), but it is an early version: expect rough edges, and expect thresholds and behavior to be tuned in later versions. See the [Roadmap](#roadmap).
+> **Version 1 (V1).** This is the first public release. It works and is tested (about 445 unit tests, no network or real model needed), but it is an early version: expect rough edges, and expect thresholds and behavior to be tuned in later versions. See the [Roadmap](#roadmap).
 
 **A zero-cost multi-agent orchestration skeleton.** Local models (Qwen through Ollama) and the free Gemini API work together, under the control of plain Python code that makes the decisions. Each user plugs in their own Gemini key and their own local models.
 
@@ -162,8 +162,11 @@ qwen_ui/             terminal, project sheet, routing, presentation
 profiles/            one folder per use case
 agents.py           swappable agents: roles, registry, routing, fallback
 docs/                configuration, agents, calibration, interchangeability
-tests/               ~380 tests, no network and no real model required
+tests/               ~445 tests, no network and no real model required
 ```
+
+## Free-language mode
+Without a leading `/`, you can talk to Qwen freely. A `reformulation` agent (Gemini by default, swappable, or local Qwen with `AGENT_REFORMULATION=qwen_interface`) rewrites your message into a clear request for Qwen; the code only runs commands from a whitelist and asks for confirmation on costly ones. Gemini is asked **once per session** for permission to rephrase your messages (masked text, leak check before every send); refusing keeps everything local. The profile is chosen implicitly from your request; a personal-data profile is detected by the code, takes priority, revokes the consent and forbids any external send. You can answer results in plain language ("keep 2, 1 is too generic"); the program confirms, asks for a reason once (optional), stores it in `state/retours.jsonl` (local, masked, git-ignored) and gives a few recent decisions as examples to Qwen (never in a personal-data profile). Limits: the personal-data detector can have false positives, and feedback only applies to the last review. Not validated with real models.
 
 ## Roadmap
 
@@ -171,7 +174,7 @@ V1 is deliberately limited. Planned for the next versions:
 
 - **V2:**
   - [x] Freely swap the AI agents (`agents.py`: roles, registry, routing with fallback, `gemini_test` test entry; see `docs/interchangeabilite.md`). Validated by unit tests with test doubles only, not with real models.
-  - [ ] A simpler interface driven by Qwen.
+  - [x] A simpler interface driven by Qwen: free-language mode (see below). Validated by unit tests with doubles only, not with real models.
   - [~] Using the project on itself: profile `auto_projet` and `docs/auto_projet.md` prepared, never run on real models.
 - [~] Calibrating thresholds from real pilot runs: thresholds are centralised and configurable, method in `docs/calibration.md`; no real calibration done yet.
 - [~] Backends other than Ollama: an abstraction and a local OpenAI-compatible backend exist, tested with doubles only. Platforms other than Windows: not validated, only Windows is tested.
