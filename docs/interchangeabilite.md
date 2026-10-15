@@ -1,7 +1,7 @@
 # Agent interchangeability
 
 Workflow agents (Qwen, Gemini, Claude through `claude_cli.py`) are interchangeable through `agents.py`. A role
-(organizer, worker, reviewer, big model, and the Qwen roles interface/framing/routing/promise/format/dedup/repair)
+(organizer, worker, reviewer, big model, rephrasing for free-language mode, and the Qwen roles interface/framing/routing/promise/format/dedup/repair)
 is reassigned by configuration (`AGENT_<ROLE>` in `.env`) or by the `agents` key of a profile, without touching the
 skeleton. Defaults are unchanged: Qwen roles stay local. This is unrelated to the development sub-agents used to build the project.
 
@@ -19,8 +19,11 @@ masking and leak check run before sending, and that free text still requires use
 **Warning:** this replacement adds an external send, is reserved for fictitious data, and consumes the shared Gemini quota.
 
 ## Real calls
-None were made: no test model name was provided (`GEMINI_TEST_MODEL` empty) and no Qwen/Ollama or Claude call was run.
-Gemini requests used: 0. Claude calls used: 0 (a Claude call would consume the subscription, it is not free).
+No comparison of agents with real models was made: no test model name was provided (`GEMINI_TEST_MODEL` empty), so the
+`gemini_test` entry was never used with a real model, and no swapped role was measured.
+The only real runs with the agent machinery are the ones of the `auto_projet` profile (organizer on Gemini, one short run
+with Claude as organizer), described in [auto_projet.md](auto_projet.md). They are single runs, not a comparison.
+Claude calls consume the subscription quota; they are not free.
 Real-model comparison tables are therefore empty; run them manually if needed.
 
 ## Limits
