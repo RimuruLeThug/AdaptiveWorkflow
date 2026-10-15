@@ -20,3 +20,10 @@ venv/
 # Système
 .DS_Store
 Thumbs.db
+
+# Outils / éditeurs / divers
+.claude/
+.idea/
+.vscode/
+*.log
+*.tmp
