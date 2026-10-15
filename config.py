@@ -102,6 +102,9 @@ AGENT_ROLES = (
     "organisateur", "worker", "relecteur", "grand_modele",  # Gemini (ou Claude) par défaut
     "interface", "cadrage", "routage", "promesse",  # Qwen 3.5 4B par défaut
     "format", "dedup", "reparation",  # Qwen 2.5 3B par défaut
+    # Reformule le texte libre en demande claire pour Qwen : agent Gemini par défaut, accord
+    # demandé une fois par session ; AGENT_REFORMULATION=qwen_interface pour tout garder en local.
+    "reformulation",
 )
 
 
@@ -176,6 +179,15 @@ class Settings:
     # Agents supplémentaires (JSON, même format que la clé « declarations » d'un profil).
     agent_declarations: str = ""
 
+    # Langage libre (qwen_ui/langage_libre.py). Nombre de retours récents de l'utilisateur
+    # (garde/jette + raison, masqués) réinjectés comme exemples dans les prompts de Qwen ;
+    # 0 = désactivé. Jamais pour un profil « données personnelles ».
+    feedback_exemples: int = 5
+    # Profil restrictif choisi par le code dès qu'une donnée personnelle est détectée dans le
+    # texte libre (il doit déclarer donnees_personnelles=true, sinon le code bloque quand même
+    # tout envoi externe pour la session).
+    profil_donnees_perso: str = "bureautique_fictive"
+
 
 def load_settings() -> Settings:
     """Construit la configuration à partir de l'environnement et des valeurs par défaut."""
@@ -221,4 +233,6 @@ def load_settings() -> Settings:
         agent_seuil_caracteres=_env_int("AGENT_SEUIL_CARACTERES", d.agent_seuil_caracteres),
         agent_seuil_score=_env_int("AGENT_SEUIL_SCORE", d.agent_seuil_score),
         agent_declarations=os.environ.get("AGENT_DECLARATIONS", "").strip(),
+        feedback_exemples=max(0, _env_int("FEEDBACK_EXEMPLES", d.feedback_exemples)),
+        profil_donnees_perso=os.environ.get("PROFIL_DONNEES_PERSO", "").strip() or d.profil_donnees_perso,
     )

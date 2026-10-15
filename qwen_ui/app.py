@@ -1,9 +1,15 @@
-"""Terminal de l'interface Qwen 5 Go (V1, mode de repli à commandes explicites)."""
+"""Terminal de l'interface Qwen 5 Go.
+
+Commandes explicites « /nom » (inchangées) ; texte libre : mode à commandes proposées
+(sans langage_libre) ou langage libre (qwen_ui/langage_libre.py : reformulation sous
+accord de session, profil implicite, retours libres sur les idées).
+"""
 
 from __future__ import annotations
 
 import json
 import re
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, List, Mapping, Optional, Tuple
@@ -14,7 +20,10 @@ from local_llm import LocalLLM, LocalLLMError
 from orchestrator import Orchestrator, OrchestrationError, RunReport
 from qwen_ui.fiche import FicheProjet, cadrer, load_fiche, save_fiche
 from qwen_ui.presenter import render_detail, render_report, summarize
-from qwen_ui.router import COMMANDS, Command, parse_command, route
+from qwen_ui.langage_libre import (FeedbackItem, LangageLibre, choose_profile, clean_reason, explicit_profile,
+                                   feedback_examples, feedback_record, interpret_feedback, personal_kinds,
+                                   redact, render_plan, short)
+from qwen_ui.router import COMMANDS, CONFIRMED_ACTIONS, Command, parse_command, route, route_libre
 from rate_limiter import DailyQuotaExhausted, RateLimiterError
 from review import ReviewError, ReviewPanel, ReviewReport, render_review
 from verify.schema import SchemaError
@@ -36,6 +45,13 @@ BANNER = """\
 Orchestrateur multi-agents — interface locale (Qwen)
 Tapez /aide pour la liste des commandes. Le texte libre est analysé par Qwen,
 qui propose une commande : rien n'est envoyé à Gemini sans votre confirmation."""
+
+BANNER_LIBRE = """\
+Orchestrateur multi-agents — interface locale (Qwen)
+Parlez librement : votre message est reformulé puis Qwen propose l'action ; le code la
+valide et demande confirmation avant tout travail coûteux. Le profil est choisi
+automatiquement (/profil reste disponible). Rien ne part vers un agent externe sans
+votre accord. /aide pour les commandes."""
 
 YES = {"o", "oui", "y", "yes"}
 
@@ -62,6 +78,7 @@ class App:
         profile_names: Optional[Callable[[], List[str]]] = None,
         masker_factory: Optional[Callable[[], Masker]] = None,
         role_llms: Optional[Mapping[str, LocalLLM]] = None,
+        langage_libre: Optional[LangageLibre] = None,
     ) -> None:
         self.llm = llm
         # Agents interchangeables (agents.py) : modèle par rôle ; rôle absent = llm, comme avant.
@@ -92,6 +109,12 @@ class App:
         self._profile_names = profile_names
         self._masker_factory = masker_factory
         self._masker: Optional[Masker] = None
+        # Langage libre (None : mode à commandes d'avant, inchangé).
+        self._ll = langage_libre
+        # Donnée personnelle détectée dans le texte libre : aucun envoi externe pour la session,
+        # même si le profil restrictif n'a pas pu être chargé. Seul /profil explicite la lève.
+        self.personal_lock = False
+        self._profile_infos: Optional[List[Tuple[str, str]]] = None
 
     def _llm(self, role: str) -> LocalLLM:
         """Modèle local du rôle (routage, cadrage, interface) : llm sauf affectation configurée."""
@@ -100,7 +123,7 @@ class App:
     # ------------------------------------------------------------- boucle
 
     def loop(self) -> None:
-        self._out(BANNER)
+        self._out(BANNER_LIBRE if self._ll else BANNER)
         if self.profile:
             self._out(f"\nProfil : {self.profile.name} — {self.profile.description}")
         if self.fiche:
@@ -149,6 +172,8 @@ class App:
     # ------------------------------------------------------------ routage
 
     def _free_text(self, line: str) -> bool:
+        if self._ll is not None:
+            return self._libre(line)
         proposal = route(self._llm("routage"), line, self.fiche.to_context() if self.fiche else "")
         if proposal.command is None:
             self._out(proposal.reply or "(pas de réponse)")
@@ -172,12 +197,197 @@ class App:
             return True
         return handler(cmd.argument) is not False
 
+    # ------------------------------------------------------- langage libre
+
+    def _personal(self) -> bool:
+        return bool(self.profile and self.profile.personal_data) or self.personal_lock
+
+    def _profiles(self) -> List[Tuple[str, str]]:
+        """(nom, description) des profils chargeables ; les profils invalides sont ignorés."""
+        if self._profile_infos is None:
+            infos: List[Tuple[str, str]] = []
+            for name in (self._profile_names() if self._profile_names else []):
+                try:
+                    p = self._profile_loader(name) if self._profile_loader else None
+                except ProfileError:
+                    continue
+                infos.append((name, p.description if p else ""))
+            self._profile_infos = infos
+        return self._profile_infos
+
+    def _ideas_listing(self) -> List[Tuple[int, str]]:
+        return [(v.idea.id, v.idea.titre) for v in self.last_review.verdicts] if self.last_review else []
+
+    def _ideas_context(self) -> str:
+        return "\n".join(f"[{i}] {short(t, 80)}" for i, t in self._ideas_listing()[:15])
+
+    def _exemples(self) -> str:
+        """Retours récents réinjectés dans les prompts de Qwen (jamais en profil « données personnelles »)."""
+        if self._ll is None or self._ll.n_exemples <= 0:
+            return ""
+        return feedback_examples(self._ll.journal.read(), profile=self.profile.name if self.profile else "",
+                                 personal=self._personal(), n=self._ll.n_exemples)
+
+    def _state_line(self) -> str:
+        name = self.profile.name if self.profile else "(aucun)"
+        r = self._ll.reformulator
+        if self._personal():
+            sends, reform = "aucun envoi externe", "locale (Qwen)"
+        else:
+            sends = "envois externes après confirmation"
+            if r.external_provider() is None:
+                reform = "locale"
+            elif r.has_consent():
+                reform = f"{r.label()} (accord de session)"
+            else:
+                reform = "locale (pas d'accord de session)"
+        return f"profil {name} — {sends} — reformulation {reform}. /profil pour changer."
+
+    def _enter_personal(self, kinds: List[str]) -> None:
+        """Donnée personnelle détectée par le code : profil restrictif, accord révoqué, aucun envoi."""
+        was = self._personal()
+        self.personal_lock = True
+        self._ll.reformulator.revoke("donnée personnelle détectée")
+        if was:
+            return
+        why = f"Donnée personnelle détectée ({', '.join(kinds)})"
+        target: Optional[Profile] = None
+        if self._profile_loader is not None:
+            try:
+                target = self._profile_loader(self._ll.profil_perso)
+            except ProfileError:
+                target = None
+        if target is not None and target.personal_data:
+            self._set_profile(target, keep_results=True)
+            self._out(f"{why} : passage automatique au profil restrictif — {self._state_line()}")
+        else:
+            self._out(f"{why} : profil restrictif « {self._ll.profil_perso} » indisponible ; tout envoi "
+                      f"externe est bloqué pour la session — {self._state_line()}")
+
+    def _auto_profile(self, name: str) -> None:
+        """Profil choisi par le code (nom déjà vérifié) ; jamais de sortie implicite d'un profil perso."""
+        if self._profile_loader is None or (self.profile and self.profile.name == name):
+            return
+        try:
+            profile = self._profile_loader(name)
+        except ProfileError as exc:
+            self._out(f"Profil « {name} » ignoré : {exc}")
+            return
+        if self._personal() and not profile.personal_data:
+            return  # le profil restrictif reste prioritaire : /profil pour en sortir
+        self._set_profile(profile)
+        self._out(f"Profil choisi automatiquement : {self._state_line()}")
+
+    def _libre(self, line: str) -> bool:
+        """Texte libre : données perso (code) -> reformulation -> routage (Qwen propose, le code valide)."""
+        names = [n for n, _ in self._profiles()]
+        # 1. Données personnelles détectées par le CODE, avant tout envoi : profil restrictif prioritaire.
+        kinds = personal_kinds(line, self._declared())
+        if kinds:
+            self._enter_personal(kinds)
+        # 2. Profil nommé explicitement dans le message (ex. « bureautique_fictive ») : chargé par le code.
+        named = explicit_profile(line, names)
+        if named:
+            self._auto_profile(named)
+        # 3. Reformulation (agent configuré sous accord de session, sinon Qwen local).
+        exemples = self._exemples()
+        ref = self._ll.reformulator.reformulate(line, personal=self._personal(), ask=self._confirm, out=self._out,
+                                                contexte=self._ideas_context(), exemples=exemples)
+        if ref is not None:
+            self._out(f"Demande comprise ({ref.agent}) : {ref.demande}")
+        # 4. Routage : Qwen propose une action de la liste blanche et un profil ; le code valide.
+        proposal = route_libre(self._llm("routage"), line, reformulation=ref.render() if ref else "",
+                               fiche_context=self.fiche.to_context() if self.fiche else "",
+                               profiles=self._profiles(), exemples=exemples, idees=self._ideas_context())
+        if proposal.feedback:
+            return self._retour(line, exemples)
+        if proposal.command is None:
+            self._out(proposal.reply or "(pas de réponse)")
+            return True
+        cmd = proposal.command
+        target = None
+        if cmd.name in ("tache", "fiche"):
+            target = choose_profile(proposal.profile, names, current=self.profile.name if self.profile else None,
+                                    current_personal=self._personal())
+        self._out(f"Commande proposée : {cmd.render()}" + (f" (profil : {target})" if target else ""))
+        if cmd.name in CONFIRMED_ACTIONS and not self._confirm("Exécuter cette commande ?"):
+            self._out("Annulé.")
+            return True
+        if target:
+            self._auto_profile(target)
+        return self._dispatch(cmd)
+
+    def _retour(self, line: str, exemples: str) -> bool:
+        """Avis libre sur les idées : Qwen interprète, le code valide puis applique (/valider, /refuser)."""
+        ideas = self._ideas_listing()
+        if not ideas:
+            self._out("Aucune revue en cours : vos avis s'appliquent aux idées notées. "
+                      "Demandez d'abord une revue (ex. « fais noter les idées »).")
+            return True
+        titles = dict(ideas)
+        plan = interpret_feedback(self._llm("interface"), line, ideas, exemples)
+        if not plan.items:
+            self._out("Je n'ai pas compris quelles idées garder ou jeter. Exemple : « je garde la 2, on jette la 1 ».")
+            return True
+        self._out("J'ai compris : " + render_plan(plan, titles))
+        if plan.ambiguous and not self._confirm("Est-ce bien cela ?"):
+            self._out("Annulé : aucune décision enregistrée.")
+            return True
+        items = self._ask_reasons(plan.items, titles)
+        for decision, label in (("garde", "validée"), ("jette", "refusée")):
+            groups: dict = {}
+            for it in items:
+                if it.decision == decision:
+                    groups.setdefault(it.raison, []).append(it.id)
+            for reason, ids in groups.items():
+                self._apply_decisions(ids, reason, label)
+        self._log_feedback(items, titles)
+        return True
+
+    def _ask_reasons(self, items: List[FeedbackItem], titles: Mapping[int, str]) -> List[FeedbackItem]:
+        """Raison demandée UNE fois par type de décision, facultative, jamais redemandée."""
+        out = list(items)
+        for decision, verb in (("garde", "garder"), ("jette", "jeter")):
+            missing = [it for it in out if it.decision == decision and not it.raison]
+            if not missing:
+                continue
+            refs = ", ".join(f"[{it.id}] {short(titles.get(it.id, ''), 40)}" for it in missing[:5])
+            refs += " …" if len(missing) > 5 else ""
+            try:
+                answer = self._in(f"Pourquoi {verb} {refs} ? (facultatif : Entrée ou « sans raison » pour passer) ")
+            except (EOFError, KeyboardInterrupt):
+                answer = ""
+            reason = clean_reason(answer)
+            if reason:
+                out = [replace(it, raison=reason) if it.decision == decision and not it.raison else it for it in out]
+        return out
+
+    def _log_feedback(self, items: List[FeedbackItem], titles: Mapping[int, str]) -> None:
+        """state/retours.jsonl : une ligne par décision, idée et raison masquées avant écriture."""
+        masker = self._masker_or_none()
+        declared = self._declared()
+        masked = {r: redact(r, masker, declared) for r in {it.raison for it in items if it.raison}}
+        name = self.profile.name if self.profile else ""
+        self._ll.journal.append([
+            feedback_record(profile=name, personal=self._personal(), role="worker", agent=self._ll.producteur,
+                            decision=it.decision, idea=titles.get(it.id, ""), reason=masked.get(it.raison, ""),
+                            declared=declared)
+            for it in items])
+
     # ----------------------------------------------------------- commandes
 
     def _cmd_aide(self, arg: str) -> None:
         width = max(len(n) for n in COMMANDS)
         self._out("Commandes :\n" + "\n".join(f"  /{n.ljust(width)}  {d}" for n, d in COMMANDS.items()))
-        self._out("Sans « / », Qwen analyse votre message et propose une commande à confirmer.")
+        if self._ll is None:
+            self._out("Sans « / », Qwen analyse votre message et propose une commande à confirmer.")
+            return
+        self._out("Sans « / », parlez librement : « fais-moi 10 idées de … », « regroupe les doublons », "
+                  "« fais noter les idées », « je garde la 2, trop générique la 1 ». Votre message est reformulé, "
+                  "Qwen propose l'action et le code confirme avec vous tout travail coûteux.\n"
+                  "Le profil est choisi automatiquement (/profil seulement pour le forcer). Une donnée "
+                  "personnelle détectée impose le profil restrictif : aucun envoi externe.\n"
+                  + self._ll.reformulator.describe())
 
     def _cmd_quitter(self, arg: str) -> bool:
         self._out("Au revoir.")
@@ -193,7 +403,7 @@ class App:
             self._out("Fiche effacée.")
             return
         self._out("Cadrage par Qwen (local, 0 requête Gemini)…")
-        fiche = cadrer(self._llm("cadrage"), arg)
+        fiche = cadrer(self._llm("cadrage"), arg, self._exemples())
         self._out(fiche.render())
         if self._confirm("Valider cette fiche ?"):
             self.fiche = fiche
@@ -244,7 +454,7 @@ class App:
 
     def _check_policy(self, *providers: str) -> None:
         """Profil « données personnelles » : aucun fournisseur externe sans accord de traitement."""
-        personal = bool(self.profile and self.profile.personal_data)
+        personal = self._personal()
         for p in providers:
             check_provider(p, personal_data=personal)
 
@@ -349,6 +559,11 @@ class App:
             self._out(f"Numéros invalides{f' : {unknown}' if unknown else ''}. "
                       f"Usage : /{'valider' if decision == 'validée' else 'refuser'} <numéros> [raison]")
             return
+        self._apply_decisions(ids, reason, decision)
+
+    def _apply_decisions(self, ids: List[int], reason: str, decision: str) -> None:
+        """Mécanisme commun de /valider, /refuser et des retours en langage libre (numéros déjà validés)."""
+        known = {v.idea.id: v for v in self.last_review.verdicts}
         self._decisions_path.parent.mkdir(parents=True, exist_ok=True)
         with open(self._decisions_path, "a", encoding="utf-8") as f:
             for i in ids:
@@ -401,12 +616,38 @@ class App:
             self._out("Profils non configurés.")
             return
         profile = self._profile_loader(name)  # lève ProfileError
-        self.profile = profile
-        self._orch = None
-        self.last_report = self.last_dedup = self.last_review = None
+        self._set_profile(profile)
+        self.personal_lock = False  # choix explicite de l'utilisateur
         mode = (" Profil « données personnelles » : aucun fournisseur externe autorisé, masquage local seulement."
                 if profile.personal_data else "")
         self._out(f"Profil : {profile.name} — {profile.description}{mode}")
+
+    def _set_profile(self, profile: Profile, *, keep_results: bool = False) -> None:
+        self.profile = profile
+        self._orch = None
+        if not keep_results:
+            self.last_report = self.last_dedup = self.last_review = None
+        if profile.personal_data and self._ll is not None:
+            self._ll.reformulator.revoke("profil « données personnelles »")
+
+    def _cmd_accord(self, arg: str) -> None:
+        if self._ll is None:
+            self._out("Reformulation non configurée.")
+            return
+        r = self._ll.reformulator
+        choice = arg.strip().lower()
+        if choice in ("non", "n", "revoquer", "révoquer", "off"):
+            r.revoke("révocation par l'utilisateur")
+            r.asked = True  # plus de question pendant la session
+            self._out("Accord révoqué : vos messages sont reformulés localement par Qwen, rien n'est envoyé.")
+        elif choice in ("oui", "o", "on"):
+            if self._personal():
+                self._out("Refusé : profil « données personnelles », aucun envoi externe.")
+            else:
+                r.grant()  # sans effet si la reformulation est locale
+                self._out(r.describe())
+        else:
+            self._out(r.describe())
 
     def _masker_or_none(self) -> Optional[Masker]:
         if self._masker is None and self._masker_factory is not None:

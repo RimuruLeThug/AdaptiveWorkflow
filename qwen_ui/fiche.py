@@ -60,10 +60,16 @@ class FicheProjet:
         return self.to_context()
 
 
-def cadrer(llm: LocalLLM, description: str) -> FicheProjet:
-    """Qwen propose la fiche ; le code la valide (schéma). Lève SchemaError si invalide."""
-    doc, _ = llm.ask_json(CADRAGE_PROMPT.format(description=description.strip()), FICHE_SCHEMA,
-                          system=CADRAGE_SYSTEM, temperature=0.1)
+def cadrer(llm: LocalLLM, description: str, exemples: str = "") -> FicheProjet:
+    """Qwen propose la fiche ; le code la valide (schéma). Lève SchemaError si invalide.
+
+    exemples : retours récents de l'utilisateur (courts, masqués), facultatifs.
+    """
+    prompt = CADRAGE_PROMPT.format(description=description.strip())
+    if exemples.strip():
+        prompt = (f"Retours récents de l'utilisateur (ses préférences, à titre indicatif) :\n"
+                  f"<<<RETOURS\n{exemples.strip()}\nRETOURS>>>\n\n{prompt}")
+    doc, _ = llm.ask_json(prompt, FICHE_SCHEMA, system=CADRAGE_SYSTEM, temperature=0.1)
     clean = lambda xs: [x.strip() for x in xs if x.strip()]
     return FicheProjet(doc["objectif"].strip(), clean(doc["contraintes"]), clean(doc["perimetre"]),
                        clean(doc["hors_perimetre"]))
