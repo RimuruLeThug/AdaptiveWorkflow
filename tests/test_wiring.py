@@ -24,7 +24,7 @@ from profiles.loader import load_profile
 from qwen_ui import bootstrap
 from qwen_ui.bootstrap import Components, agents_configured, build_components, make_app
 from rate_limiter import RateLimiter
-from tests.test_gemini_client import KEY, Clock, FakeTransport, ok_body
+from tests.test_gemini_client import KEY, Clock, FakeTransport, err_body, ok_body
 from tests.test_profiles import MINIMAL, write_profile
 from tests.test_promise import FakeLLM
 
@@ -308,6 +308,35 @@ class PersonalDataTest(WiringFixture):
         app.handle("bonjour")
         self.assertTrue(any(o.startswith("Refusé par la politique de données") for o in self.outputs))
         self.assertEqual(self.transport.requests, [])
+
+
+class ReviewFixesTest(WiringFixture):
+    def test_reparation_externe_du_texte_libre_demande_confirmation(self):
+        # Qwen (routage par défaut) renvoie un JSON invalide reprenant le texte libre ;
+        # le rôle « reparation » confié à Gemini ne l'envoie qu'après confirmation.
+        c = self.components(self.configured(("routage", "qwen_interface"), ("reparation", "gemini_test")))
+        self.llm.answers.append("Commande : tache, écrire à jean.martin@exemple.fr")
+        self.inputs.append("n")  # envoi externe refusé
+        self.app(c).handle("écrire à jean.martin@exemple.fr")
+        self.assertEqual(self.transport.requests, [])
+        self.assertIn("Envoyer ce texte à un agent externe ? (o/n) ", self.outputs)
+        preview = next(o for o in self.outputs if "Destinataire" in o)
+        self.assertIn("« gemini_test »", preview)
+        self.assertIn(TEST_MODEL, preview)
+        self.assertNotIn("jean.martin@exemple.fr", preview)
+        calls = [(e["role"], e["agent"], e["result"]) for e in self.logger.events if e["event"] == "agent_call"]
+        self.assertIn(("reparation", "gemini_test", "apercu_refuse"), calls)
+
+    def test_quota_journalier_message_dedie(self):
+        c = self.components(self.configured(("routage", "gemini_test,gemini")))
+        details = [{"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+                    "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}]
+        self.transport.responses.append(HttpResponse(429, {}, err_body(429, "RESOURCE_EXHAUSTED", details=details)))
+        self.inputs.append("o")
+        self.app(c).handle("bonjour")
+        self.assertTrue(any(o.startswith("Quota Gemini épuisé pour aujourd'hui") for o in self.outputs))
+        self.assertEqual(len(self.transport.requests), 1)  # aucun repli vers l'autre agent Gemini
+        self.assertEqual(self.llm.calls, [])
 
 
 if __name__ == "__main__":
