@@ -10,14 +10,16 @@ from pathlib import Path
 from unittest import mock
 
 import config
-from agents import (ROLES, Agent, AgentEmptyResponse, AgentRateLimited, AgentRegistry, AgentRouter,
+from agents import (ROLES, Agent, AgentDailyQuota, AgentEmptyResponse, AgentRateLimited, AgentRegistry,
+                    AgentRouter,
                     AgentSchemaError, AgentSpec, AgentTimeout, AgentUnavailable, ClaudeAgent,
                     ExternalSendBlocked, GeminiAgent, LocalAgent, LocalOpenAIBackend, NoAgentSucceeded,
-                    RawReply, RoleCallError, RoleClient, RoleLLM, RoleRoute, build_registry, build_router,
+                    RawReply, RoleCallError, RoleClient, RoleDailyQuotaError, RoleLLM, RoleRoute,
+                    build_registry, build_router,
                     parse_declarations, resolve_routes, validate_profile_agents)
 from claude_cli import ClaudeCodeClient
 from config import GeminiQuota, Settings
-from gemini_client import GeminiClient, GeminiError, HttpResponse
+from gemini_client import GeminiClient, GeminiDailyQuotaError, GeminiError, HttpResponse
 from local_llm import LocalLLMError
 from orchestrator import Orchestrator, RunLogger
 from organizers.gemini import GeminiOrganizer
@@ -28,7 +30,8 @@ from privacy.vault import Vault
 from profiles.loader import ProfileError, load_profile
 from qwen_ui.fiche import FICHE_SCHEMA, cadrer
 from qwen_ui.router import ROUTE_SCHEMA, route
-from rate_limiter import RateLimiter
+from rate_limiter import DailyQuotaExhausted, RateLimiter
+from review import ReviewPanel
 from tests.test_gemini_client import KEY, Clock, FakeTransport, err_body, ok_body
 from tests.test_profiles import MINIMAL, write_profile
 from tests.test_promise import CONTRACT, FakeLLM, version
@@ -389,7 +392,7 @@ class RoutingTest(GeminiFixture):
                                            qwen_interface=['{"identique": true, "explication": "x"}'],
                                            qwen_format=['{"identique": "?"}'])
                 s = settings(agent_roles=(("promesse", "gemini_test,qwen_interface"),))
-                router = router_for(reg, s)
+                router = router_for(reg, s, confirm=lambda preview: True)  # promesse : rôle Qwen
                 r = router.call("promesse", "p", schema=PROMISE_SCHEMA)
                 self.assertEqual(r.agent, "qwen_interface")
                 self.assertIn(f"repli après gemini_test ({kind})", r.reason)
@@ -649,7 +652,7 @@ class PrivacyTest(GeminiFixture):
     def test_b_masquage_avant_envoi_et_reinjection_locale(self):
         self.answer(json.dumps({"identique": False, "explication": "écrire à [EMAIL_1]"}))
         s = replace(self.settings, agent_roles=(("promesse", "gemini_test"),))
-        router = router_for(self.registry(s), s, masker=Masker(Vault()))
+        router = router_for(self.registry(s), s, masker=Masker(Vault()), confirm=lambda p: True)
         r = router.call("promesse", "Contact : jean.martin@exemple.fr", schema=PROMISE_SCHEMA)
         sent = self.sent_texts()[0]
         self.assertNotIn("jean.martin@exemple.fr", sent)
@@ -699,13 +702,182 @@ class PrivacyTest(GeminiFixture):
         self.assertIn("[EMAIL_1]", previews[0])
         self.assertNotIn("jean.martin@exemple.fr", previews[0])
 
-    def test_c_pas_de_confirmation_hors_texte_libre_ni_en_local(self):
-        self.answer('{"identique": true, "explication": "x"}')
-        s = replace(self.settings, agent_roles=(("promesse", "gemini_test"),))
+    def test_c_pas_de_confirmation_hors_role_qwen_ni_en_local(self):
+        self.answer("texte")
+        s = replace(self.settings, agent_roles=(("worker", "gemini_test"),))
         router_for(self.registry(s), s, confirm=lambda p: self.fail("aucune confirmation attendue")).call(
-            "promesse", "p", schema=PROMISE_SCHEMA)
+            "worker", "p")
         reg, _ = fake_registry(qwen_interface=[ROUTE_OK])
         route(router_for(reg, confirm=lambda p: self.fail("local : pas de confirmation")).role_llm("routage"), "x")
+
+
+# ------------------------------------- texte libre : confirmation sur tout rôle Qwen
+
+QWEN_INVALIDE = "Commande : tache, relancer jean.martin@exemple.fr pour le devis"  # non réparable par le code
+
+
+class FreeTextDerivedTest(GeminiFixture):
+    """Tout envoi externe dont le contenu peut dériver du texte libre exige la confirmation."""
+
+    def router(self, *roles, qwen_answers=(), **kw):
+        s = replace(self.settings, agent_roles=tuple(roles))
+        reg = self.registry(s)
+        self.qwen = FakeLLM(list(qwen_answers))
+        reg.register(LocalAgent(AgentSpec("qwen_interface", "ollama", "qwen-factice"), self.qwen))
+        reg.register(LocalAgent(AgentSpec("qwen_format", "ollama", "qwen-format-factice"), FakeLLM([])))
+        return router_for(reg, s, **kw)
+
+    def test_reparation_externe_du_json_de_qwen_exige_confirmation(self):
+        cases = [("routage", lambda llm: route(llm, "relancer jean.martin@exemple.fr")),
+                 ("cadrage", lambda llm: cadrer(llm, "devis pour jean.martin@exemple.fr"))]
+        for role, use in cases:
+            for confirm in (None, lambda preview: False):
+                with self.subTest(role=role, confirm=confirm):
+                    router = self.router(("reparation", "gemini_test"), qwen_answers=[QWEN_INVALIDE],
+                                         masker=Masker(Vault()), confirm=confirm)
+                    with self.assertRaises(LocalLLMError):  # échec fermé, rien n'est parti
+                        use(router.role_llm(role))
+                    self.assertEqual(self.transport.requests, [])
+                    self.assertIn(("reparation", "gemini_test", "apercu_refuse"),
+                                  [(e["role"], e["agent"], e["result"]) for e in router.journal])
+
+    def test_reparation_externe_confirmee_apercu_masque_et_destinataire_nomme(self):
+        # Gemini ne voit que le jeton ; la réparation doit rester fidèle à la sortie de Qwen.
+        self.answer(json.dumps({"action": "tache", "argument": "relancer [EMAIL_1] pour le devis", "reponse": ""}))
+        previews = []
+        router = self.router(("reparation", "gemini_test"), qwen_answers=[QWEN_INVALIDE],
+                             masker=Masker(Vault()), confirm=lambda p: previews.append(p) or True)
+        cmd = route(router.role_llm("routage"), "relancer jean.martin@exemple.fr").command
+        self.assertEqual((cmd.name, cmd.argument), ("tache", "relancer jean.martin@exemple.fr pour le devis"))
+        self.assertEqual(len(previews), 1)
+        self.assertIn("« gemini_test »", previews[0])
+        self.assertIn(TEST_MODEL, previews[0])
+        self.assertIn("fournisseur gemini", previews[0])
+        self.assertIn("[EMAIL_1]", previews[0])
+        self.assertNotIn("jean.martin@exemple.fr", previews[0])
+        self.assertNotIn("jean.martin@exemple.fr", self.sent_texts()[0])
+
+    def test_tout_role_qwen_exige_confirmation(self):
+        qwen_roles = [r for r, i in ROLES.items() if i.default_agent.startswith("qwen")]
+        self.assertEqual(set(qwen_roles), {"interface", "cadrage", "routage", "promesse", "format", "dedup",
+                                           "reparation"})
+        for role in qwen_roles:
+            with self.subTest(role=role):
+                self.assertTrue(ROLES[role].free_text)
+                router = self.router((role, "gemini_test"))
+                with self.assertRaises(PreviewRefused):
+                    router.call(role, "texte")
+        self.assertEqual(self.transport.requests, [])
+
+    def test_free_text_explicite_ne_peut_pas_assouplir(self):
+        router = self.router(("routage", "gemini_test"))
+        with self.assertRaises(PreviewRefused):
+            router.call("routage", "salut", free_text=False)
+        self.assertEqual(self.transport.requests, [])
+
+    def test_confirmation_redemandee_si_le_repli_change_de_fournisseur(self):
+        reg, fakes = fake_registry(gemini_test=[AgentRateLimited("429")], claude=[ROUTE_OK])
+        s = settings(agent_roles=(("routage", "gemini_test,claude"),))
+        previews = []
+        router = router_for(reg, s, confirm=lambda p: previews.append(p) or True)
+        self.assertEqual(router.call("routage", "salut", schema=ROUTE_SCHEMA).agent, "claude")
+        self.assertEqual(len(previews), 2)
+        self.assertIn("« gemini_test »", previews[0])
+        self.assertIn("« claude »", previews[1])
+        self.assertIn("fournisseur claude", previews[1])
+
+    def test_refus_au_repli_rien_n_est_envoye_au_second_fournisseur(self):
+        reg, fakes = fake_registry(gemini_test=[AgentRateLimited("429")], claude=[ROUTE_OK])
+        answers = iter([True, False])
+        router = router_for(reg, settings(agent_roles=(("routage", "gemini_test,claude"),)),
+                            confirm=lambda p: next(answers))
+        with self.assertRaises(PreviewRefused):
+            router.call("routage", "salut")
+        self.assertEqual(len(fakes["gemini_test"].prompts), 1)
+        self.assertEqual(fakes["claude"].prompts, [])
+        self.assertEqual(router.journal[-1]["result"], "apercu_refuse")
+
+    def test_profil_personnel_reparation_externe_refusee(self):
+        router = self.router(("reparation", "gemini_test"), qwen_answers=[QWEN_INVALIDE],
+                             personal_data=True, confirm=lambda p: True)
+        with self.assertRaises(PolicyError):
+            route(router.role_llm("routage"), "salut")
+        self.assertEqual(self.transport.requests, [])
+
+
+# ------------------------------------------------ quota journalier Gemini
+
+
+DAILY_429 = HttpResponse(429, {}, err_body(429, "RESOURCE_EXHAUSTED", details=[
+    {"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+     "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}]}]))
+
+
+class DailyQuotaTest(GeminiFixture):
+    def test_adaptateur_gemini_quota_journalier(self):
+        self.answer(DAILY_429)
+        agent = GeminiAgent(AgentSpec("gemini_test", "gemini", TEST_MODEL), self.factory, self.limiter)
+        with self.assertRaises(AgentDailyQuota) as ctx:
+            agent.call("p")
+        self.assertIsInstance(ctx.exception.original, GeminiDailyQuotaError)
+        self.assertEqual(len(self.transport.requests), 1)  # aucun retry
+
+    def test_adaptateur_gemini_arret_dur_du_limiteur(self):
+        limiter = RateLimiter(GeminiQuota(daily_alert=1, daily_hard_stop=1), self.tmp / "q2.json",
+                              wall_clock=self.clock.time, sleep=self.clock.sleep)
+        self.answer("un")
+        agent = GeminiAgent(AgentSpec("gemini_test", "gemini", TEST_MODEL), self.factory, limiter)
+        agent.call("p")
+        with self.assertRaises(AgentDailyQuota) as ctx:
+            agent.call("p")
+        self.assertIsInstance(ctx.exception.original, DailyQuotaExhausted)
+
+    def test_aucun_repli_vers_un_autre_agent_gemini_et_type_d_arret_conserve(self):
+        reg, fakes = fake_registry(gemini=[AgentDailyQuota("stop")], gemini_test=["ne doit pas servir"])
+        router = router_for(reg, settings(agent_roles=(("worker", "gemini,gemini_test"),)))
+        with self.assertRaises(RoleDailyQuotaError) as ctx:
+            router.role_client("worker").generate("p")
+        self.assertIsInstance(ctx.exception, GeminiDailyQuotaError)
+        self.assertIsInstance(ctx.exception, RoleCallError)
+        self.assertEqual(fakes["gemini_test"].prompts, [])
+        self.assertEqual([(e["agent"], e["result"]) for e in router.journal],
+                         [("gemini", "quota_journalier"), ("gemini_test", "quota_journalier")])
+
+    def test_repli_non_gemini_autorise(self):
+        reg, fakes = fake_registry(gemini=[AgentDailyQuota("stop")], qwen_interface=["texte"])
+        router = router_for(reg, settings(agent_roles=(("worker", "gemini,gemini_test,qwen_interface"),)))
+        self.assertEqual(router.role_client("worker").generate("p").agent, "qwen_interface")
+        self.assertEqual(fakes["gemini_test"].prompts, [])
+
+    def test_role_llm_propage_l_arret_au_lieu_d_echouer_en_local(self):
+        reg, _ = fake_registry(gemini=[AgentDailyQuota("stop")])
+        router = router_for(reg, settings(agent_roles=(("routage", "gemini"),)), confirm=lambda p: True)
+        with self.assertRaises(GeminiDailyQuotaError) as ctx:
+            route(router.role_llm("routage"), "salut")
+        self.assertNotIsInstance(ctx.exception, LocalLLMError)
+
+    def test_bus_s_arrete_comme_sur_le_chemin_par_defaut(self):
+        plan = json.dumps({"tasks": [{"worker": "redacteur", "instruction": "a"},
+                                     {"worker": "redacteur", "instruction": "b"}]})
+        spec = WorkerSpec("redacteur", "rédige", "Tu rédiges.")
+        for where in ("organisateur", "worker"):
+            with self.subTest(where=where):
+                answers = [AgentDailyQuota("stop")] if where == "organisateur" else [plan, AgentDailyQuota("stop")]
+                reg, fakes = fake_registry(gemini=answers, gemini_test=["jamais"])
+                router = router_for(reg, settings(agent_roles=((where, "gemini,gemini_test"),)))
+                orch = Orchestrator(GeminiOrganizer(router.role_client("organisateur")),
+                                    [GeminiWorker(spec, router.role_client("worker"))], basic_verifier)
+                with self.assertRaises(GeminiDailyQuotaError):
+                    orch.run("tâche", synthesize=False)
+                self.assertEqual(fakes["gemini_test"].prompts, [])
+                self.assertEqual(len(fakes["gemini"].prompts), len(answers))  # 2e délégation jamais tentée
+
+    def test_revue_s_arrete(self):
+        reg, fakes = fake_registry(gemini=[AgentDailyQuota("stop")])
+        panel = ReviewPanel(router_for(reg).role_client("relecteur"))
+        with self.assertRaises(GeminiDailyQuotaError):
+            panel.review([Idea(1, {"titre": "Photo du frigo"})])
+        self.assertEqual(len(fakes["gemini"].prompts), 1)  # pas de 2e relecteur après l'arrêt
 
 
 if __name__ == "__main__":

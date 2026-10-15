@@ -25,8 +25,14 @@ traite une requête, selon une configuration, puis normaliser sa réponse.
 Confidentialité (privacy/, jamais assouplie) : un rôle confié à Gemini ou Claude est
 un envoi externe. Profil « données personnelles » : tout agent externe est refusé
 (PolicyError), avant le moindre envoi, y compris en repli. Sinon : masquage et
-contrôle de fuite avant l'envoi, et confirmation de l'utilisateur pour une requête
-en texte libre. Les valeurs réelles sont réinjectées en local par le code.
+contrôle de fuite avant l'envoi, et confirmation de l'utilisateur (aperçu masqué,
+destinataire nommé, redemandée si le repli change de destinataire) pour tout rôle dont
+le contenu peut dériver du texte libre (rôles Qwen : routage, cadrage, réparation...).
+Les valeurs réelles sont réinjectées en local par le code.
+
+Quota journalier Gemini épuisé : aucun autre agent Gemini n'est tenté et, faute de repli
+non Gemini abouti, RoleDailyQuotaError (sous-classe de GeminiDailyQuotaError) arrête le
+bus, la revue et l'application comme sur le chemin par défaut.
 """
 
 from __future__ import annotations
@@ -60,7 +66,10 @@ class RoleInfo:
     name: str
     description: str
     default_agent: str
-    free_text: bool = False  # le rôle reçoit du texte libre tapé par l'utilisateur
+    # Le contenu envoyé peut dériver du texte libre tapé par l'utilisateur (directement,
+    # ou indirectement : sortie de Qwen reprenant ce texte, JSON à réparer, idées...).
+    # Tout envoi externe d'un tel rôle exige la confirmation avec aperçu masqué.
+    free_text: bool = False
 
 
 ROLES: Dict[str, RoleInfo] = {r.name: r for r in (
@@ -71,14 +80,19 @@ ROLES: Dict[str, RoleInfo] = {r.name: r for r in (
     RoleInfo("interface", "interface locale, résumés", "qwen_interface", free_text=True),
     RoleInfo("cadrage", "cadrage de la fiche projet", "qwen_interface", free_text=True),
     RoleInfo("routage", "propose une commande à partir du texte libre", "qwen_interface", free_text=True),
-    RoleInfo("promesse", "contrôle de promesse, réponse fermée oui/non", "qwen_interface"),
-    RoleInfo("format", "mise en forme JSON", "qwen_format"),
-    RoleInfo("dedup", "dédoublonnage des idées", "qwen_format"),
-    RoleInfo("reparation", "réparation d'un JSON invalide", "qwen_format"),
+    RoleInfo("promesse", "contrôle de promesse, réponse fermée oui/non", "qwen_interface", free_text=True),
+    RoleInfo("format", "mise en forme JSON", "qwen_format", free_text=True),
+    RoleInfo("dedup", "dédoublonnage des idées", "qwen_format", free_text=True),
+    # Répare aussi le JSON invalide d'un rôle en texte libre (routage, cadrage...) : même règle.
+    RoleInfo("reparation", "réparation d'un JSON invalide", "qwen_format", free_text=True),
 )}
 
 if tuple(ROLES) != tuple(config.AGENT_ROLES):  # garde-fou : une seule liste de rôles
     raise RuntimeError("agents.ROLES et config.AGENT_ROLES divergent")
+# Garde-fou : un rôle local par défaut (Qwen) peut voir le texte libre ; le confier à un agent
+# externe ne doit jamais se faire sans confirmation.
+if any(not r.free_text for r in ROLES.values() if r.default_agent.startswith("qwen")):
+    raise RuntimeError("un rôle Qwen doit exiger la confirmation de tout envoi externe (free_text=True)")
 
 # Fournisseur technique -> fournisseur au sens de la politique de données (privacy/policy.py).
 PROVIDER_POLICY = {"ollama": "local", "local_openai": "local", "gemini": "gemini", "claude": "claude"}
@@ -106,6 +120,21 @@ class AgentTimeout(AgentError):
 
 class AgentRateLimited(AgentError):
     kind = "http_429"
+
+
+class AgentDailyQuota(AgentRateLimited):
+    """Quota JOURNALIER Gemini épuisé (arrêt dur du limiteur ou 429 PerDay de Google).
+
+    Commun à tous les agents Gemini (une seule file, un seul quota) : aucun autre agent
+    Gemini n'est tenté, et l'arrêt est propagé (RoleDailyQuotaError) si aucun repli
+    non Gemini n'aboutit.
+    """
+
+    kind = "quota_journalier"
+
+    def __init__(self, message: str, original: Optional[BaseException] = None) -> None:
+        super().__init__(message)
+        self.original = original
 
 
 class AgentEmptyResponse(AgentError):
@@ -138,6 +167,12 @@ class RoleCallError(GeminiError):
     Sous-classe de GeminiError pour que le bus, la revue et l'escalade existants
     le traitent comme un échec de délégation ordinaire, sans modification.
     """
+
+
+class RoleDailyQuotaError(RoleCallError, GeminiDailyQuotaError):
+    """Quota journalier Gemini épuisé pendant un rôle : même type d'arrêt que le chemin
+    par défaut (GeminiDailyQuotaError), donc le bus, la revue et App.handle s'arrêtent
+    et affichent le message dédié."""
 
 
 # ---------------------------------------------------------------- spécification
@@ -334,7 +369,9 @@ class GeminiAgent(Agent):
         try:
             r = client.generate(prompt, system=with_schema_hint(system, schema), temperature=temperature,
                                 json_output=json_output)
-        except (RetriesExhausted, GeminiDailyQuotaError, DailyQuotaExhausted) as exc:
+        except (GeminiDailyQuotaError, DailyQuotaExhausted) as exc:
+            raise AgentDailyQuota(f"agent {self.spec.name} : {exc}", exc) from exc
+        except RetriesExhausted as exc:
             raise AgentRateLimited(f"agent {self.spec.name} : {exc}") from None
         except GeminiError as exc:
             raise _classify(str(exc))(f"agent {self.spec.name} : {exc}") from None
@@ -800,8 +837,8 @@ class AgentRouter:
 
     # ------------------------------------------------------- envoi externe
 
-    def _prepare_external(self, prompt: str, free_text: bool) -> str:
-        """Masquage, contrôle de fuite, puis confirmation (texte libre). Rien ne part sinon."""
+    def _mask_external(self, prompt: str) -> Tuple[str, str]:
+        """Masquage et contrôle de fuite. Retourne (texte masqué, aperçu). Lève LeakBlocked."""
         declared = self.declared()
         if self.masker is not None:
             res = self.masker.mask(prompt, declared=declared)
@@ -813,9 +850,14 @@ class AgentRouter:
             preview = "\n".join(["=== Aperçu de ce qui sera envoyé (aucun masquage configuré) ===", prompt])
         if leaks:
             raise LeakBlocked(leaks)
-        if free_text and (self.confirm is None or not self.confirm(preview)):
+        return text, preview
+
+    def _confirm_external(self, role: str, sp: AgentSpec, preview: str) -> None:
+        """Confirmation de l'utilisateur, en nommant le destinataire. Lève PreviewRefused."""
+        dest = (f"=== Destinataire : agent externe « {sp.name} » (fournisseur {sp.provider}, "
+                f"modèle {sp.model}), rôle « {role} » ===")
+        if self.confirm is None or not self.confirm(dest + "\n" + preview):
             raise PreviewRefused("envoi externe non confirmé : rien n'a été envoyé")
-        return text
 
     def _unmask(self, res: AgentResult, schema: Optional[dict]) -> AgentResult:
         if self.masker is None:
@@ -855,7 +897,8 @@ class AgentRouter:
              free_text: Optional[bool] = None) -> AgentResult:
         if role not in self.routes:
             raise ValueError(f"rôle inconnu : {role} (rôles : {', '.join(self.routes)})")
-        free_text = ROLES[role].free_text if free_text is None and role in ROLES else bool(free_text)
+        # free_text ne peut que renforcer la règle du rôle, jamais l'assouplir.
+        free_text = bool(free_text) or (ROLES[role].free_text if role in ROLES else True)
         candidates, reason = self.routes[role].plan(prompt, score)
         specs = [self.registry.spec(n) for n in candidates]
 
@@ -867,10 +910,17 @@ class AgentRouter:
                     check_provider(sp.policy_provider, personal_data=True)  # lève PolicyError
 
         failures: List[Tuple[str, str]] = []
-        outbound: Optional[str] = None  # texte masqué, préparé une seule fois
+        outbound: Optional[Tuple[str, str]] = None  # (texte masqué, aperçu), préparés une seule fois
+        confirmed: set = set()  # destinataires (fournisseur, modèle) déjà confirmés pour cet appel
+        quota: Optional[AgentDailyQuota] = None  # quota journalier Gemini épuisé pendant cet appel
         repair_llm = None if role == "reparation" else self.repair_llm
         for i, sp in enumerate(specs, 1):
             why = reason if i == 1 else f"repli après {failures[-1][0]} ({failures[-1][1]})"
+            if quota is not None and sp.provider == "gemini":
+                # Même file, même quota : inutile de tenter un autre agent Gemini.
+                failures.append((sp.name, AgentDailyQuota.kind))
+                self._log(role, sp, AgentDailyQuota.kind, why, attempt=i, detail="non appelé")
+                continue
             agent = self.registry.get(sp.name)
             missing = agent.unavailable_reason()
             if missing:
@@ -879,22 +929,31 @@ class AgentRouter:
                 continue
             text = prompt
             if sp.external:
-                if outbound is None:
-                    try:
-                        outbound = self._prepare_external(prompt, free_text)
-                    except LeakBlocked:
-                        self._log(role, sp, "fuite_bloquee", why, attempt=i)
-                        raise
-                    except PreviewRefused:
-                        self._log(role, sp, "apercu_refuse", why, attempt=i)
-                        raise
-                text = outbound
+                try:
+                    if outbound is None:
+                        outbound = self._mask_external(prompt)
+                    # Confirmation redemandée si le repli bascule vers un autre destinataire externe.
+                    if free_text and (sp.provider, sp.model) not in confirmed:
+                        self._confirm_external(role, sp, outbound[1])
+                        confirmed.add((sp.provider, sp.model))
+                except LeakBlocked:
+                    self._log(role, sp, "fuite_bloquee", why, attempt=i)
+                    raise
+                except PreviewRefused:
+                    self._log(role, sp, "apercu_refuse", why, attempt=i)
+                    raise
+                text = outbound[0]
             t0 = self._monotonic()
             try:
                 res = agent.call(text, system=system, schema=schema, temperature=temperature,
                                  json_output=json_output, repair_llm=repair_llm)
                 if sp.external:
                     res = self._unmask(res, schema)
+            except AgentDailyQuota as exc:
+                quota = exc
+                failures.append((sp.name, exc.kind))
+                self._log(role, sp, exc.kind, why, attempt=i, duration_s=self._monotonic() - t0)
+                continue
             except AgentError as exc:
                 failures.append((sp.name, exc.kind))
                 self._log(role, sp, exc.kind, why, attempt=i, duration_s=self._monotonic() - t0)
@@ -902,6 +961,8 @@ class AgentRouter:
             res.role, res.reason = role, why
             self._log(role, sp, "ok", why, attempt=i, duration_s=self._monotonic() - t0, repair=res.repair)
             return res
+        if quota is not None:
+            raise quota  # arrêt du quota journalier, jamais dilué en échec ordinaire
         raise NoAgentSucceeded(role, failures)
 
 
@@ -934,6 +995,9 @@ class RoleLLM(LocalLLM):
             res = self.router.call(self.role, prompt, system=system, schema=json_schema, temperature=temperature)
         except (LeakBlocked, PreviewRefused) as exc:
             raise ExternalSendBlocked(f"rôle « {self.role} » : {exc}") from None
+        except AgentDailyQuota as exc:
+            # Pas un échec local : l'arrêt du quota journalier remonte tel quel (App.handle).
+            raise RoleDailyQuotaError(f"rôle « {self.role} » : {exc}") from exc.original
         except AgentError as exc:
             raise LocalLLMError(f"rôle « {self.role} » : {exc}") from None
         self.last_result = res
@@ -979,6 +1043,8 @@ class RoleClient:
                                  json_output=json_output, score=self.score)
         except (LeakBlocked, PreviewRefused) as exc:
             raise RoleCallError(f"rôle « {self.role} » : {exc}") from None
+        except AgentDailyQuota as exc:
+            raise RoleDailyQuotaError(f"rôle « {self.role} » : {exc}") from exc.original
         except AgentError as exc:
             raise RoleCallError(str(exc)) from None
         return RoleReply(r.text, r.attempts, r.input_tokens, r.output_tokens, r.latency_s, r.truncated,
