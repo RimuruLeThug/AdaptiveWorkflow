@@ -94,6 +94,26 @@ class GeminiQuota:
     reset_timezone: str = "America/Los_Angeles"  # minuit, heure du Pacifique
 
 
+# Rôles des agents (roadmap V2, agents interchangeables, voir agents.py). Chaque rôle
+# peut être confié à un autre agent par variable d'environnement AGENT_<ROLE>
+# (ex. AGENT_ROUTAGE=gemini_test,qwen_interface : agent principal puis replis) et
+# AGENT_<ROLE>_DIFFICILE (agent des tâches jugées difficiles par le code).
+AGENT_ROLES = (
+    "organisateur", "worker", "relecteur", "grand_modele",  # Gemini (ou Claude) par défaut
+    "interface", "cadrage", "routage", "promesse",  # Qwen 3.5 4B par défaut
+    "format", "dedup", "reparation",  # Qwen 2.5 3B par défaut
+)
+
+
+def _env_roles(suffix: str = "") -> tuple:
+    out = []
+    for role in AGENT_ROLES:
+        raw = os.environ.get(f"AGENT_{role.upper()}{suffix}", "").strip()
+        if raw:
+            out.append((role, raw))
+    return tuple(out)
+
+
 @dataclass(frozen=True)
 class Settings:
     gemini: GeminiQuota = field(default_factory=GeminiQuota)
@@ -143,6 +163,19 @@ class Settings:
     logs_dir: Path = LOGS_DIR
     profile: str = "brainstorm"  # profil chargé au démarrage (profiles/<nom>/profil.json)
 
+    # Agents interchangeables (agents.py). Entrée de test « gemini_test » : agent Gemini
+    # dont le modèle vient UNIQUEMENT de GEMINI_TEST_MODEL ; vide = agent indisponible.
+    # Il passe par la même file du limiteur que les autres appels Gemini.
+    gemini_test_model: str = ""
+    # Affectation rôle -> agents, lue dans AGENT_<ROLE> ; vide = défauts du projet.
+    agent_roles: tuple = ()  # ((rôle, "agent[,repli...]"), ...)
+    agent_roles_difficile: tuple = ()  # ((rôle, agent), ...)
+    # Critère déterministe du routage simple/difficile (seulement si un agent « difficile » est configuré).
+    agent_seuil_caracteres: int = 6000
+    agent_seuil_score: int = 5
+    # Agents supplémentaires (JSON, même format que la clé « declarations » d'un profil).
+    agent_declarations: str = ""
+
 
 def load_settings() -> Settings:
     """Construit la configuration à partir de l'environnement et des valeurs par défaut."""
@@ -182,4 +215,10 @@ def load_settings() -> Settings:
         state_dir=Path(os.environ.get("ORCH_STATE_DIR", str(d.state_dir))),
         logs_dir=Path(os.environ.get("ORCH_LOGS_DIR", str(d.logs_dir))),
         profile=os.environ.get("PROFILE", d.profile).strip(),
+        gemini_test_model=os.environ.get("GEMINI_TEST_MODEL", "").strip(),
+        agent_roles=_env_roles(),
+        agent_roles_difficile=_env_roles("_DIFFICILE"),
+        agent_seuil_caracteres=_env_int("AGENT_SEUIL_CARACTERES", d.agent_seuil_caracteres),
+        agent_seuil_score=_env_int("AGENT_SEUIL_SCORE", d.agent_seuil_score),
+        agent_declarations=os.environ.get("AGENT_DECLARATIONS", "").strip(),
     )

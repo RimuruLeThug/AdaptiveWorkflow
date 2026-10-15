@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from agents import validate_profile_agents
 from verify.schema import SchemaError, parse_json
 from workers.base import WorkerSpec
 from workers.defaults import IDEAS_SCHEMA
@@ -59,6 +60,8 @@ PROFILE_SCHEMA = {
         "champs_utiles": {"type": "array", "items": {"type": "string"}},
         "champs_personnels": {"type": "array", "items": {"type": "string"}},
         "exemples": {"type": "array", "items": {"type": "string"}},
+        # Agents interchangeables : déclarations et affectation rôle -> agent (voir agents.py).
+        "agents": {"type": "object"},
     },
 }
 
@@ -78,6 +81,7 @@ class Profile:
     personal_fields: Tuple[str, ...] = ()
     examples: Tuple[str, ...] = ()
     records: Tuple[dict, ...] = ()  # données fictives d'exemple, minimisées au chargement
+    agents: Dict[str, dict] = field(default_factory=dict)  # clé « agents » validée (agents.py)
 
 
 def _worker(w: dict) -> WorkerSpec:
@@ -123,8 +127,12 @@ def load_profile(name: str, base: Path = PROFILES_DIR) -> Profile:
         if useful:  # minimisation dès le chargement (brief, section 7, étape 1)
             raw = [{k: r[k] for k in useful if k in r} for r in raw]
         records = tuple(raw)
+    try:
+        agents_section = validate_profile_agents(doc.get("agents"), personal_data=doc["donnees_personnelles"])
+    except ValueError as exc:
+        raise ProfileError(f"profil {name} : agents invalides : {exc}") from None
     return Profile(doc["nom"], doc["description"], doc["donnees_personnelles"], workers, review, useful,
-                   personal, tuple(doc.get("exemples", [])), records)
+                   personal, tuple(doc.get("exemples", [])), records, agents_section)
 
 
 def list_profiles(base: Path = PROFILES_DIR) -> List[str]:
