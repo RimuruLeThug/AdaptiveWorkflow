@@ -1,4 +1,4 @@
-"""Routage (brief, section 3) en mode de repli, sans appel d'outils.
+"""Routage en mode de repli, sans appel d'outils.
 
 Deux voies :
 1. Commande explicite (« /tache ... ») : analysée par le code, exécutée telle quelle.
@@ -23,7 +23,7 @@ COMMANDS = {
     "organisateur": "choisir l'organisateur : /organisateur gemini | claude (set_organizer)",
     "tache": "lancer une tâche via l'organisateur Gemini : /tache <consigne> (run_task)",
     "detail": "afficher une sortie complète du dernier run : /detail <numéro>",
-    "dedup": "regrouper les idées en double du dernier run (local, Qwen 2 Go)",
+    "dedup": "regrouper les idées en double du dernier run (local, Qwen 2.5 3B)",
     "revue": "faire noter les idées dédupliquées par les 3 reviewers Gemini (3 requêtes)",
     "valider": "valider des idées de la dernière revue : /valider <numéros>",
     "refuser": "refuser des idées (remonté à l'organisateur) : /refuser <numéros> [raison]",

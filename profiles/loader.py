@@ -1,4 +1,4 @@
-"""Profils : un dossier par cas d'usage (brief, section 12).
+"""Profils : un dossier par cas d'usage.
 
     profiles/<nom>/profil.json      déclaration (workers, critères, données)
     profiles/<nom>/donnees.json     données FICTIVES d'exemple (facultatif)
@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from agents import validate_profile_agents
 from verify.schema import SchemaError, parse_json
@@ -124,7 +124,7 @@ def load_profile(name: str, base: Path = PROFILES_DIR) -> Profile:
         raw = json.loads(data_path.read_text(encoding="utf-8"))
         if not isinstance(raw, list) or not all(isinstance(r, dict) for r in raw):
             raise ProfileError(f"profil {name} : donnees.json doit être une liste d'objets")
-        if useful:  # minimisation dès le chargement (brief, section 7, étape 1)
+        if useful:  # minimisation dès le chargement
             raw = [{k: r[k] for k in useful if k in r} for r in raw]
         records = tuple(raw)
     try:

@@ -1,6 +1,6 @@
-"""Déduplication des idées (brief, section 3, pipeline brainstorm, étape 3).
+"""Déduplication des idées.
 
-Qwen 2 Go PROPOSE des groupes de doublons ; le code DÉCIDE :
+Qwen 2.5 3B PROPOSE des groupes de doublons ; le code DÉCIDE :
 - doublons exacts (titres identiques après normalisation) regroupés sans modèle ;
 - chaque groupe proposé est validé (identifiants existants, pas de recoupement,
   au moins 2 idées) ; une proposition invalide est ignorée en entier ;
@@ -177,7 +177,7 @@ def deduplicate(ideas: Sequence[Idea], llm: Optional[LocalLLM]) -> DedupResult:
 
     remaining = {i: by_id[i] for i in by_id if i not in absorbed}
 
-    # 2. Doublons de sens, proposés par Qwen 2 Go.
+    # 2. Doublons de sens, proposés par Qwen 2.5 3B.
     if llm is None:
         result.warnings.append("pas de modèle de déduplication : seuls les doublons exacts sont regroupés")
     elif len(remaining) < 2:

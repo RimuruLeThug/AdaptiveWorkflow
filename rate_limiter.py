@@ -1,4 +1,4 @@
-"""Limiteur de débit Gemini (brief, sections 4 et 10).
+"""Limiteur de débit Gemini.
 
 Garanties :
 - file unique FIFO pour tous les appels Gemini (organisateur, workers, reviewers) ;
@@ -17,7 +17,7 @@ quota plutôt que le dépasser.
 Limite connue : un seul processus à la fois doit utiliser le fichier d'état.
 
 La concurrence des modèles locaux (VRAM, parallélisme Ollama) n'est pas gérée
-ici (brief, section 10).
+ici.
 """
 
 from __future__ import annotations

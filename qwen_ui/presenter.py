@@ -1,4 +1,4 @@
-"""Présentation sans embellissement (brief, section 3, étape 5 du pipeline).
+"""Présentation sans embellissement.
 
 L'affichage principal est produit par le CODE, pas par le modèle : statut,
 compteurs, synthèse recopiée telle quelle, sorties rejetées avec leur raison.

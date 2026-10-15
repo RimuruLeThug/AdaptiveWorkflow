@@ -1,6 +1,6 @@
 """Configuration centrale : quotas, modèles, fournisseur du grand modèle.
 
-Les valeurs par défaut sont celles du brief (sections 4, 5 et 6). Elles sont
+Les valeurs par défaut sont celles du projet. Elles sont
 volontairement prudentes et peuvent être surchargées par variables
 d'environnement. Aucune clé n'est jamais écrite dans ce fichier.
 """
@@ -81,7 +81,7 @@ def _env_float(name: str, default: float) -> float:
 
 @dataclass(frozen=True)
 class GeminiQuota:
-    """Quota d'un compartiment Gemini (brief, section 4)."""
+    """Quota d'un compartiment Gemini."""
 
     # Limites du plan gratuit, rappelées pour référence (non utilisées pour décider).
     provider_rpm: int = 15
@@ -125,12 +125,12 @@ class Settings:
     gemini_model: str = "gemini-3.5-flash-lite"
     gemini_timeout_s: float = 120.0
 
-    # Bus d'orchestration (brief, section 3) : l'organisateur propose, le code décide.
+    # Bus d'orchestration : l'organisateur propose, le code décide.
     delegation_budget: int = 6  # délégations maximum par tâche, toutes tentatives confondues
     max_depth: int = 1  # l'organisateur délègue aux workers ; les workers ne délèguent pas
     max_plan_attempts: int = 2  # un plan refusé peut être corrigé une fois (appel compté)
 
-    # Revue et vote (brief, sections 3 et 11) — à calibrer pendant le pilote (section 14).
+    # Revue et vote: à calibrer (voir docs/calibration.md).
     review_threshold: float = 6.5  # note minimale pour qu'un reviewer « approuve »
     review_votes_needed: int = 2  # vote 2/3
     shortlist_min: int = 5
@@ -139,23 +139,23 @@ class Settings:
     contrarian_floor: float = 4.0  # ... si leur score pondéré atteint ce plancher
     max_review_ideas: int = 40
 
-    # Grand modèle (brief, section 5) : "gemini" (Flash-Lite, gratuit) ou "claude"
+    # Grand modèle : "gemini" (Flash-Lite, gratuit) ou "claude"
     # (Claude Code, abonnement Pro de l'utilisateur, jamais l'API sans autorisation).
     big_model_provider: str = "gemini"
     claude_model: str = "sonnet"  # alias Claude Code : sonnet, opus, haiku...
     claude_timeout_s: float = 600.0
     claude_allow_api_billing: bool = False
     # Score de complexité au-delà duquel une idée est candidate à l'escalade.
-    # Valeur provisoire basse, à calibrer sur les premiers projets (section 14).
+    # Valeur provisoire basse, à calibrer sur les premiers projets.
     complexity_threshold: int = 5
 
-    # Modèles locaux via Ollama (brief, section 6). Tags de la bibliothèque
+    # Modèles locaux via Ollama. Tags de la bibliothèque
     # Ollama, alignés sur `ollama list` de la machine de référence. Autre variante :
     # QWEN_INTERFACE_MODEL / QWEN_FORMAT_MODEL dans .env.
     local_backend: str = "ollama"
     ollama_host: str = "http://localhost:11434"
-    qwen_interface_model: str = "qwen3.5:4b-q8_0"  # « Qwen 5 Go » : interface, cadrage, routage, contrôle de promesse
-    qwen_format_model: str = "qwen2.5:3b-instruct-q4_K_M"  # « Qwen 2 Go » : dédup, réparation JSON
+    qwen_interface_model: str = "qwen3.5:4b-q8_0"  # « Qwen 3.5 4B » : interface, cadrage, routage, contrôle de promesse
+    qwen_format_model: str = "qwen2.5:3b-instruct-q4_K_M"  # « Qwen 2.5 3B » : dédup, réparation JSON
     qwen_interface_num_ctx: int = 8192
     qwen_format_num_ctx: int = 16384  # réparation : document d'entrée + document réparé
     # Durée de maintien des modèles en VRAM après la dernière requête (ex. 2m, 30s, 0 = déchargé

@@ -1,4 +1,4 @@
-"""Terminal de l'interface Qwen 5 Go.
+"""Terminal de l'interface Qwen 3.5 4B.
 
 Commandes explicites « /nom » (inchangées) ; texte libre : mode à commandes proposées
 (sans langage_libre) ou langage libre (qwen_ui/langage_libre.py : reformulation sous
@@ -83,7 +83,7 @@ class App:
         self.llm = llm
         # Agents interchangeables (agents.py) : modèle par rôle ; rôle absent = llm, comme avant.
         self._role_llms = dict(role_llms or {})
-        self.format_llm = format_llm  # Qwen 2 Go : déduplication
+        self.format_llm = format_llm  # Qwen 2.5 3B : déduplication
         self._factory = orchestrator_factory
         self._quota_info = quota_info  # () -> (utilisées, limite)
         self._fiche_path = Path(state_dir) / "fiche_projet.json"
@@ -527,7 +527,7 @@ class App:
             self._out("Le dernier run ne contient pas d'idées au format JSON (worker generateur).")
             return
         if self.format_llm is None:
-            self._out("(Qwen 2 Go indisponible : seuls les doublons exacts seront regroupés.)")
+            self._out("(Qwen 2.5 3B indisponible : seuls les doublons exacts seront regroupés.)")
         self._out(f"Déduplication locale de {len(ideas)} idées (0 requête Gemini)…")
         self.last_dedup = deduplicate(ideas, self.format_llm)
         self._out(render_dedup(self.last_dedup))

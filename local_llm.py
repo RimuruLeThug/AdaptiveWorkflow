@@ -1,4 +1,4 @@
-"""Modèles locaux : interface unique, indépendante du backend (brief, section 6).
+"""Modèles locaux : interface unique, indépendante du backend.
 
 Implémentation V1 : Ollama (API REST locale, bibliothèque standard).
 Les modèles locaux ne passent PAS par le limiteur Gemini : leur concurrence

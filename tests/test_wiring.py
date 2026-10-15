@@ -265,7 +265,7 @@ class ConfiguredRoleTest(WiringFixture):
         self.format_llm.answers.append(FICHE_OK)
         self.inputs.append("n")
         self.app(c).handle("/fiche un outil de devis")
-        self.assertEqual(len(self.format_llm.calls), 1)  # Qwen 2 Go déjà vérifié, réutilisé
+        self.assertEqual(len(self.format_llm.calls), 1)  # Qwen 2.5 3B déjà vérifié, réutilisé
         self.assertEqual(self.llm.calls, [])
         self.assertTrue(any("Un outil de devis" in o for o in self.outputs))
         call = next(e for e in self.logger.events if e["event"] == "agent_call")

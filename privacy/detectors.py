@@ -1,4 +1,4 @@
-"""Détection déterministe des données identifiantes (brief, section 7, étape 2).
+"""Détection déterministe des données identifiantes.
 
 Principe : en matière de données personnelles, un faux positif (masquer un
 nombre anodin) coûte peu ; un faux négatif (laisser passer un IBAN) est grave.
@@ -17,7 +17,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
-from typing import Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Callable, Dict, Iterable, List, Optional
 
 
 @dataclass(frozen=True)

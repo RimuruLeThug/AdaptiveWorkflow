@@ -1,4 +1,4 @@
-"""Pilote (brief, section 14) : rejoue un scénario complet sans saisie et mesure.
+"""Pilote : rejoue un scénario complet sans saisie et mesure.
 
     python pilot.py                      # scénario par défaut (données fictives)
     python pilot.py mon_scenario.txt     # une commande par ligne, # = commentaire

@@ -1,4 +1,4 @@
-"""Fournisseurs autorisés selon les données (brief, section 7, règles juridiques).
+"""Fournisseurs autorisés selon les données.
 
 - Gemini gratuit : exclu pour des données clients (pas d'accord de traitement).
 - Claude via l'abonnement Pro (claude.ai) : offre grand public, pas d'accord de

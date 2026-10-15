@@ -1,4 +1,4 @@
-"""Reviewers et vote (brief, section 3, pipeline brainstorm étape 4, et section 11).
+"""Reviewers et vote.
 
 - 3 reviewers Gemini, grilles et personnalités différentes (rôles, prompts et
   températures distincts de ceux des générateurs) ;
