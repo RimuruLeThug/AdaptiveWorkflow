@@ -6,7 +6,7 @@ import json
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, List, Mapping, Optional, Tuple
 
 from config import MissingKeyError
 from gemini_client import GeminiDailyQuotaError, GeminiError
@@ -61,8 +61,11 @@ class App:
         profile_loader: Optional[Callable[[str], Profile]] = None,
         profile_names: Optional[Callable[[], List[str]]] = None,
         masker_factory: Optional[Callable[[], Masker]] = None,
+        role_llms: Optional[Mapping[str, LocalLLM]] = None,
     ) -> None:
         self.llm = llm
+        # Agents interchangeables (agents.py) : modèle par rôle ; rôle absent = llm, comme avant.
+        self._role_llms = dict(role_llms or {})
         self.format_llm = format_llm  # Qwen 2 Go : déduplication
         self._factory = orchestrator_factory
         self._quota_info = quota_info  # () -> (utilisées, limite)
@@ -89,6 +92,10 @@ class App:
         self._profile_names = profile_names
         self._masker_factory = masker_factory
         self._masker: Optional[Masker] = None
+
+    def _llm(self, role: str) -> LocalLLM:
+        """Modèle local du rôle (routage, cadrage, interface) : llm sauf affectation configurée."""
+        return self._role_llms.get(role, self.llm)
 
     # ------------------------------------------------------------- boucle
 
@@ -142,7 +149,7 @@ class App:
     # ------------------------------------------------------------ routage
 
     def _free_text(self, line: str) -> bool:
-        proposal = route(self.llm, line, self.fiche.to_context() if self.fiche else "")
+        proposal = route(self._llm("routage"), line, self.fiche.to_context() if self.fiche else "")
         if proposal.command is None:
             self._out(proposal.reply or "(pas de réponse)")
             return True
@@ -186,7 +193,7 @@ class App:
             self._out("Fiche effacée.")
             return
         self._out("Cadrage par Qwen (local, 0 requête Gemini)…")
-        fiche = cadrer(self.llm, arg)
+        fiche = cadrer(self._llm("cadrage"), arg)
         self._out(fiche.render())
         if self._confirm("Valider cette fiche ?"):
             self.fiche = fiche
@@ -442,7 +449,7 @@ class App:
         if not self.last_report:
             self._out("Aucun run pour l'instant.")
             return
-        self._out(summarize(self.llm, self.last_report))
+        self._out(summarize(self._llm("interface"), self.last_report))
 
     def _cmd_workers(self, arg: str) -> None:
         specs = self._orchestrator().worker_specs
@@ -496,7 +503,7 @@ class App:
         # 1. Complexité : Qwen estime, le code calcule le score.
         self._out("Estimation de la complexité par Qwen (local)…")
         fiche_text = self.fiche.to_context() if self.fiche else ""
-        cx: Complexity = estimate_complexity(self.llm, verdict.idea, fiche_text)
+        cx: Complexity = estimate_complexity(self._llm("interface"), verdict.idea, fiche_text)
         self._out(f"Complexité : {cx.fichiers} fichier(s), {cx.dependances} dépendance(s) nouvelle(s), "
                   f"risque {cx.risque} -> score {cx.score} (seuil {self.complexity_threshold}). {cx.justification}")
         if cx.score <= self.complexity_threshold and not force:
