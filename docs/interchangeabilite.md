@@ -8,7 +8,7 @@ skeleton. Defaults are unchanged: Qwen roles stay local. This is unrelated to th
 ## Verified offline only (unit tests with fake agents: `tests/test_agents.py`, `tests/test_wiring.py`)
 - Contract cases: valid reply, invalid JSON repaired by a fake Qwen 2.5 3B, timeout, HTTP 429, out-of-schema reply, empty reply.
 - Role replacement by configuration or profile only; routing by configured rule; fallback when an agent is unavailable.
-- Each routing choice is logged on the bus log (`agent_call`: role, provider, model, duration, result, reason).
+- Each routing choice is logged on the bus log (`agent_call`: role, provider, model, duration_s, result, reason).
 - Every Gemini call, whatever the agent, goes through the single rate-limiter queue.
 
 ## Replacing Qwen roles with Gemini
