@@ -1,8 +1,8 @@
-"""Pipeline de masquage (brief, section 7) :
+"""Pipeline de masquage :
 
 1. minimisation : seuls les champs déclarés utiles par le profil sont gardés ;
 2. détection déterministe (privacy/detectors.py) + valeurs des champs personnels ;
-3. indices indirects proposés par Qwen 5 Go, retenus SEULEMENT s'ils sont
+3. indices indirects proposés par Qwen 3.5 4B, retenus SEULEMENT s'ils sont
    vérifiables (le passage cité existe tel quel dans le texte) ;
 4. aperçu validé par un humain avant tout envoi externe ;
 5. contrôle de fuite : les détecteurs repassent sur le texte masqué, et aucune
@@ -12,7 +12,7 @@
    jetons) : plus sûr qu'un modèle, qui pourrait altérer une valeur. Les jetons
    déformés ou inconnus sont signalés, jamais devinés.
 
-Rappel juridique (section 7) : des données pseudonymisées restent des données
+Rappel juridique : des données pseudonymisées restent des données
 personnelles (RGPD, considérant 26). Ce module réduit le risque, il ne sort pas
 du RGPD. Voir privacy/policy.py pour les fournisseurs autorisés.
 """

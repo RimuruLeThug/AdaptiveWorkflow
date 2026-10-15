@@ -1,4 +1,4 @@
-"""Étape 2 : limiteur de débit, testé avec appels simulés (brief, section 10).
+"""Étape 2 : limiteur de débit, testé avec appels simulés.
 
 Scénarios exigés : rafale, 429 simulé, redémarrage en cours de journée,
 changement de jour. Aucun appel réseau.

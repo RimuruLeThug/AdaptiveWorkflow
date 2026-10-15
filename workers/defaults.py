@@ -1,4 +1,4 @@
-"""Workers par défaut du squelette (brief, section 3) : Worker 1 et Worker 2.
+"""Workers par défaut du squelette : Worker 1 et Worker 2.
 
 Le profil « brainstorm » (profiles/brainstorm/profil.json) déclare les mêmes
 workers ; un test vérifie qu'ils restent identiques. Cette liste sert de repli

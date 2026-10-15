@@ -1,4 +1,4 @@
-"""Fiche projet (brief, section 3, étape 1 du pipeline) : cadrage par Qwen 5 Go."""
+"""Fiche projet : cadrage par Qwen 3.5 4B."""
 
 from __future__ import annotations
 

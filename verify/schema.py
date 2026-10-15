@@ -1,4 +1,4 @@
-"""Validation JSON par le code (brief, section 3) : json.loads puis schéma.
+"""Validation JSON par le code : json.loads puis schéma.
 
 Sous-ensemble volontairement réduit de JSON Schema, sans dépendance :
 type (object, array, string, integer, number, boolean, null, ou liste de types),

@@ -1,11 +1,11 @@
-"""Réparation d'une sortie JSON invalide (brief, section 3 : « Qwen 2 Go ne sert
-qu'à réparer ce qui échoue »).
+"""Réparation d'une sortie JSON invalide (Qwen 2.5 3B ne sert
+qu'à réparer ce qui échoue).
 
 Ordre :
 1. le code valide (json.loads + schéma) : si c'est bon, rien n'est réparé ;
 2. réparations déterministes sans modèle (bloc JSON entouré de texte, virgules
    finales) ;
-3. Qwen 2 Go propose une version corrigée (sortie contrainte par le schéma) ;
+3. Qwen 2.5 3B propose une version corrigée (sortie contrainte par le schéma) ;
 4. le code revalide ET vérifie la fidélité : chaque texte du JSON réparé doit
    figurer dans la sortie d'origine (les valeurs d'énumération exceptées). Une
    réparation qui invente ou réécrit du contenu est refusée.

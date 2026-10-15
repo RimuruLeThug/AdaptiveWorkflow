@@ -35,7 +35,7 @@ FICHE_OK = json.dumps({"objectif": "Un outil de devis", "contraintes": [], "peri
 REFORM_OK = json.dumps({"demande": "demande reformulée", "intention": "", "objet": "", "contraintes": [],
                         "ambiguites": []})
 # Données fictives. Le code postal (seul) est masqué avant tout envoi externe mais ne déclenche pas
-# le profil restrictif (TRIGGER_IGNORED) : il permet de couvrir le masquage du routage de bout en bout.
+# le profil restrictif (hors TRIGGER_KINDS) : il permet de couvrir le masquage du routage de bout en bout.
 EMAIL = "jean.martin@exemple.fr"
 CP = "75011"
 ACCORD = "Autoriser Gemini à reformuler vos messages (texte masqué, contrôle de fuite avant chaque envoi) ? (o/n) "
@@ -265,7 +265,7 @@ class ConfiguredRoleTest(WiringFixture):
         self.format_llm.answers.append(FICHE_OK)
         self.inputs.append("n")
         self.app(c).handle("/fiche un outil de devis")
-        self.assertEqual(len(self.format_llm.calls), 1)  # Qwen 2 Go déjà vérifié, réutilisé
+        self.assertEqual(len(self.format_llm.calls), 1)  # Qwen 2.5 3B déjà vérifié, réutilisé
         self.assertEqual(self.llm.calls, [])
         self.assertTrue(any("Un outil de devis" in o for o in self.outputs))
         call = next(e for e in self.logger.events if e["event"] == "agent_call")

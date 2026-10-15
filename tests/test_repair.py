@@ -1,4 +1,4 @@
-"""Réparation JSON : déterministe d'abord, Qwen 2 Go ensuite, jamais de contenu inventé."""
+"""Réparation JSON : déterministe d'abord, Qwen 2.5 3B ensuite, jamais de contenu inventé."""
 
 import json
 import unittest

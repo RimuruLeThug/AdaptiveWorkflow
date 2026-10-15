@@ -322,7 +322,7 @@ def build_app(
     try:
         format_llm.check_available()
     except LocalLLMError as exc:
-        output_fn(f"Attention : Qwen 2 Go indisponible, réparation JSON et déduplication limitées. {exc}")
+        output_fn(f"Attention : Qwen 2.5 3B indisponible, réparation JSON et déduplication limitées. {exc}")
         format_llm = None
 
     try:

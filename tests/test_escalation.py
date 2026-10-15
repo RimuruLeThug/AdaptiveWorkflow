@@ -15,7 +15,7 @@ from escalation import (
     structural_checks,
 )
 from tests.test_promise import FakeLLM
-from verify.promise import IdeaContract, ProposedVersion
+from verify.promise import ProposedVersion
 from verify.repair import repair_json
 from workers.dedup import Idea
 

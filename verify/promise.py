@@ -1,10 +1,10 @@
-"""Contrôle de promesse (brief, section 3, « Escalade vers le grand modèle »).
+"""Contrôle de promesse.
 
 Contrat d'idée figé après validation : promesse, périmètre inclus, hors
 périmètre, contraintes non négociables. Une version proposée (par le grand
 modèle, voir escalation.py) est REJETÉE si :
 - une contrainte non négociable a disparu (contrôle déterministe, par le code) ;
-- Qwen 5 Go répond « non » à la question fermée « la promesse est-elle identique ? » ;
+- Qwen 3.5 4B répond « non » à la question fermée « la promesse est-elle identique ? » ;
 - le contrôle est impossible (Qwen injoignable, réponse invalide) : on échoue
   fermé, jamais ouvert.
 

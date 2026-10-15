@@ -1,4 +1,4 @@
-"""Masquage et contrôle de fuite — hors ligne, données fictives uniquement (brief, section 7)."""
+"""Masquage et contrôle de fuite — hors ligne, données fictives uniquement."""
 
 import json
 import tempfile

@@ -1,6 +1,6 @@
 """Point d'entrée : python -m qwen_ui
 
-Refuse de démarrer si la clé Gemini manque ou si Qwen 5 Go n'est pas disponible.
+Refuse de démarrer si la clé Gemini manque ou si Qwen 3.5 4B n'est pas disponible.
 """
 
 from __future__ import annotations

@@ -10,7 +10,6 @@ from privacy.masker import Masker
 from privacy.vault import Vault
 from profiles.loader import ProfileError, list_profiles, load_profile
 from tests.test_orchestrator import ScriptedOrganizer, plan
-from tests.test_promise import FakeLLM
 from tests.test_qwen_ui import Harness
 from verify.basic import basic_verifier
 from workers.base import Reply, Worker
@@ -68,7 +67,7 @@ class LoaderTest(unittest.TestCase):
                 load_profile("casse", Path(d))
 
     def test_nouveau_profil_sans_modifier_le_squelette(self):
-        """Preuve (brief, section 12) : un cas d'usage nouveau tourne avec le bus tel quel."""
+        """Preuve : un cas d'usage nouveau tourne avec le bus tel quel."""
         with tempfile.TemporaryDirectory() as d:
             write_profile(Path(d), "traduction", MINIMAL)
             profile = load_profile("traduction", Path(d))

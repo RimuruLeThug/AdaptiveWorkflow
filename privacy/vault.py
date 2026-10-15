@@ -1,4 +1,4 @@
-"""Coffre local jeton → valeur réelle (brief, section 7, étape 6).
+"""Coffre local jeton → valeur réelle.
 
 - local, chiffré, jamais transmis : le fichier n'est lu que par ce module ;
 - un même client garde le même jeton (normalisation de la valeur) ; à la

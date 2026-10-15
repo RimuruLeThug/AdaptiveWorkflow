@@ -22,7 +22,6 @@ from review import (
     review_schema,
     select_shortlist,
 )
-from tests.test_promise import FakeLLM
 from verify.repair import RepairResult, repair_json
 from workers.dedup import Idea
 
