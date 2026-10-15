@@ -167,9 +167,12 @@ tests/               ~290 tests, no network and no real model required
 
 V1 is deliberately limited. Planned for the next versions:
 
-- **V2:** freely swap the AI agents (add or replace models as needed and choose which one handles a request), a simpler interface driven by Qwen, and using the project on itself.
-- Calibrating thresholds from real pilot runs.
-- Support for backends other than Ollama and for platforms other than Windows.
+- **V2:**
+  - [x] Freely swap the AI agents (`agents.py`: roles, registry, routing with fallback, `gemini_test` test entry; see `docs/interchangeabilite.md`). Validated by unit tests with test doubles only, not with real models.
+  - [ ] A simpler interface driven by Qwen.
+  - [~] Using the project on itself: profile `auto_projet` and `docs/auto_projet.md` prepared, never run on real models.
+- [~] Calibrating thresholds from real pilot runs: thresholds are centralised and configurable, method in `docs/calibration.md`; no real calibration done yet.
+- [~] Backends other than Ollama: an abstraction and a local OpenAI-compatible backend exist, tested with doubles only. Platforms other than Windows: not validated, only Windows is tested.
 
 ## Legal note on profiles
 

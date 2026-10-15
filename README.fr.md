@@ -154,6 +154,17 @@ tests/               ~290 tests, sans réseau ni modèle réel
 
 Aucune clé n'est écrite dans le code ; `.env`, `state/` et `logs/` sont ignorés par git.
 
+## Feuille de route
+
+La V1 est volontairement limitée. Prévu pour les prochaines versions :
+
+- **V2 :**
+  - [x] Agents IA librement interchangeables (`agents.py` : rôles, registre, routage avec repli, entrée de test `gemini_test` ; voir `docs/interchangeabilite.md`). Validé par tests unitaires avec doubles uniquement, pas avec de vrais modèles.
+  - [ ] Interface plus simple pilotée par Qwen.
+  - [~] Usage du projet sur lui-même : profil `auto_projet` et `docs/auto_projet.md` préparés, jamais exécutés sur de vrais modèles.
+- [~] Calibrer les seuils depuis de vrais pilotes : seuils centralisés et configurables, méthode dans `docs/calibration.md` ; aucune calibration réelle faite.
+- [~] Backends autres qu'Ollama : abstraction et backend local compatible OpenAI, testés avec des doubles uniquement. Autres plateformes que Windows : non validées, seul Windows est testé.
+
 ## Cadre légal des profils
 
 Analyse d'un binaire autorisée seulement si vous le possédez ou avez le droit de l'étudier. Aucun profil n'est fourni pour décompiler un logiciel commercial ou contourner une protection (DRM, anti-triche).
