@@ -1,0 +1,6 @@
+# Scénario pilote 2 : doublons entre deux générateurs indépendants
+/fiche Objectif : trouver des idées d'application mobile pour réduire le gaspillage alimentaire à la maison. Contraintes : gratuite ; fonctionne hors ligne ; développable seul en 3 mois. Périmètre : application Android ; suggestions de recettes avec les restes. Hors périmètre : livraison ; paiement ; version web.
+/tache Confie DEUX tâches distinctes au generateur, avec la même consigne pour chacune : proposer 8 idées de fonctionnalités dont au moins 1 contrarienne. Les deux générations doivent être indépendantes.
+/dedup
+/revue
+que peux-tu faire ?

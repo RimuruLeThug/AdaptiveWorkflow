@@ -1,0 +1,32 @@
+[
+  {
+    "client": "Jean DUPONT",
+    "email": "jean.dupont@exemple.fr",
+    "telephone": "06 12 34 56 78",
+    "montant": 1250,
+    "echeance": "2026-09-30",
+    "objet": "Facture F-2026-118",
+    "iban": "FR76 3000 6000 0112 3456 7890 189",
+    "note_interne": "client difficile"
+  },
+  {
+    "client": "Élodie Martin-Leroy",
+    "email": "e.martin@exemple.fr",
+    "telephone": "07 98 76 54 32",
+    "montant": 480,
+    "echeance": "2026-10-10",
+    "objet": "Devis D-2026-042",
+    "iban": "FR76 1000 7000 0222 3333 4444 555",
+    "note_interne": "à relancer"
+  },
+  {
+    "client": "Karim N'DIAYE",
+    "email": "karim.ndiaye@exemple.fr",
+    "telephone": "01 23 45 67 89",
+    "montant": 2900,
+    "echeance": "2026-10-01",
+    "objet": "Facture F-2026-131",
+    "iban": "FR76 2000 8000 0333 4444 5555 666",
+    "note_interne": ""
+  }
+]

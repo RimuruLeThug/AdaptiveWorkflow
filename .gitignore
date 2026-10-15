@@ -1,0 +1,22 @@
+# Secrets : jamais versionnés
+.env
+.env.*
+*.env
+*.env.txt
+!.env.example
+
+# État local (compteurs de quota, journaux, mapping de masquage chiffré)
+state/
+logs/
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Système
+.DS_Store
+Thumbs.db

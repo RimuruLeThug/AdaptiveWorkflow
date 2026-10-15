@@ -1,0 +1,12 @@
+# Le cœur du projet n'a AUCUNE dépendance obligatoire : bibliothèque standard Python 3.11+.
+
+# Recommandé : base officielle des fuseaux horaires (sinon calcul intégré de l'heure du Pacifique).
+tzdata
+
+# Facultatif, recommandé pour de vraies données : détection des noms en français.
+#   pip install spacy && python -m spacy download fr_core_news_md
+# spacy
+
+# Facultatif, hors Windows uniquement : chiffrement du coffre de masquage
+# (sous Windows, le chiffrement DPAPI intégré est utilisé).
+# cryptography

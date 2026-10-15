@@ -1,0 +1,30 @@
+{
+  "nom": "bureautique_fictive",
+  "description": "Exemple back-office de petite entreprise (relances, courriers) sur données FICTIVES. Profil « données personnelles » : aucun fournisseur externe n'est autorisé en V1 ; seul le masquage local est disponible.",
+  "donnees_personnelles": true,
+  "workers": [
+    {
+      "nom": "redacteur",
+      "description": "Rédige des courriers et relances professionnels à partir de données masquées.",
+      "consigne_systeme": "Tu rédiges des courriers professionnels clairs et courtois. Les données personnelles sont remplacées par des jetons entre crochets : recopie-les tels quels, n'en invente jamais.",
+      "temperature": 0.4
+    }
+  ],
+  "champs_utiles": [
+    "client",
+    "email",
+    "telephone",
+    "montant",
+    "echeance",
+    "objet"
+  ],
+  "champs_personnels": [
+    "client",
+    "email",
+    "telephone"
+  ],
+  "exemples": [
+    "/masquer M. Jean DUPONT (jean.dupont@exemple.fr, 06 12 34 56 78) n'a pas réglé la facture F-2026-118 de 1250 euros, échéance dépassée.",
+    "/donnees"
+  ]
+}

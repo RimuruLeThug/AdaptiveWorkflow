@@ -1,0 +1,34 @@
+{
+  "nom": "brainstorm",
+  "description": "Brainstorm, comparaison et jugement d'idées par plusieurs agents (données fictives ou publiques).",
+  "donnees_personnelles": false,
+  "workers": [
+    {
+      "nom": "generateur",
+      "description": "Génère des idées courtes et variées en JSON (titre, problème, approche, effort, type). Inclut toujours au moins une idée simple, une ambitieuse et une contrarienne.",
+      "consigne_systeme": "Tu génères des idées. Chaque idée est courte et concrète. Varie les approches : au moins une idée simple, une ambitieuse et une contrarienne (qui prend le contre-pied de l'évidence). N'écris rien en dehors du JSON demandé. Format : {\"idees\": [{\"titre\": \"...\", \"probleme\": \"...\", \"approche\": \"...\", \"effort\": \"faible|moyen|fort\", \"type\": \"simple|ambitieuse|contrarienne|autre\"}]}",
+      "temperature": 0.9,
+      "schema_sortie": "idees"
+    },
+    {
+      "nom": "analyste",
+      "description": "Analyse approfondie d'idées retenues ou d'une tâche technique (texte structuré).",
+      "consigne_systeme": "Tu es un analyste rigoureux. Tu examines ce qu'on te confie : forces, faiblesses, risques, coût et étapes concrètes. Tu distingues les faits des hypothèses et tu signales ce qui manque pour conclure. Pas de formules creuses.",
+      "temperature": 0.4,
+      "schema_sortie": null
+    }
+  ],
+  "revue": {
+    "seuil": 6.5,
+    "shortlist_min": 5,
+    "shortlist_max": 8
+  },
+  "exemples": [
+    "/fiche Objectif : trouver des idées d'application mobile pour réduire le gaspillage alimentaire à la maison. Contraintes : gratuite ; fonctionne hors ligne ; développable seul en 3 mois. Périmètre : application Android ; suggestions de recettes avec les restes. Hors périmètre : livraison ; paiement ; version web.",
+    "/tache Utilise le generateur pour proposer 12 idées de fonctionnalités, dont au moins 2 contrariennes et 3 réalisables en une semaine.",
+    "/dedup",
+    "/revue",
+    "/valider <numéro>",
+    "/escalader <numéro>"
+  ]
+}

@@ -1,0 +1,9 @@
+# Scénario pilote 3 : escalade vers le grand modèle (Gemini Flash-Lite)
+/fiche Objectif : trouver des idées d'application mobile pour réduire le gaspillage alimentaire à la maison. Contraintes : gratuite ; fonctionne hors ligne ; développable seul en 3 mois. Périmètre : application Android ; suggestions de recettes avec les restes. Hors périmètre : livraison ; paiement ; version web.
+/tache Utilise le generateur pour proposer 8 idées de fonctionnalités, dont au moins 2 contrariennes.
+/revue
+/valider {premier}
+/escalader {premier} force
+# Vérification seulement : Claude Code installé et connecté ? (aucun appel à Claude)
+/grand claude
+/quota
