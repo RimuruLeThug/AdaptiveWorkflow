@@ -393,9 +393,11 @@ def _fmt(x: Optional[float]) -> str:
 
 def render_review(report: ReviewReport, *, remaining_quota: Optional[int] = None) -> str:
     n_valid = sum(1 for r in report.reviews if r.valid)
-    quota = f", quota restant : {remaining_quota}" if remaining_quota is not None else ""
+    quota = f", quota Gemini restant : {remaining_quota}" if remaining_quota is not None else ""
+    # Compteur d'appels aux relecteurs, quel que soit l'agent (Gemini, Claude, Qwen) : vu en réel,
+    # « 3 requêtes Gemini » s'affichait alors que les relecteurs étaient sur Claude.
     lines = [f"=== Revue {report.review_id} : {len(report.verdicts)} idées, {n_valid}/{len(report.reviews)} "
-             f"revues valides, {report.gemini_requests} requêtes Gemini{quota} ===",
+             f"revues valides, {report.gemini_requests} appel(s) aux relecteurs{quota} ===",
              f"Règle : approbation si note >= {_fmt(report.threshold)}, idée approuvée si "
              f"{report.votes_needed}/{len(report.reviews)} votes. Calcul fait par le code."]
     labels = {"approuvée": "APPROUVÉE", "complément": "non approuvée (complément)",

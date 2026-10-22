@@ -206,11 +206,46 @@ class MaskerTest(unittest.TestCase):
     def test_envoi_bloque_si_fuite(self):
         m = self.masker()
         m.mask("M. Jean DUPONT")  # le coffre connaît « Jean DUPONT »
+        m._known = lambda text, res: text  # simule un masquage défaillant : le contrôle doit bloquer
         confirms = []
         # Le nom apparaît en minuscules, hors des motifs : seul le coffre le reconnaît.
         with self.assertRaises(LeakBlocked):
             m.prepare_external("note : jean dupont doit rappeler", confirm=lambda p: confirms.append(p) or True)
         self.assertEqual(confirms, [])  # bloqué avant même l'aperçu
+
+    def test_valeur_du_coffre_remasquee_avec_son_jeton(self):
+        m = self.masker()
+        token = m.mask("M. Jean DUPONT").text.split()[-1]  # « [PERSONNE_1] »
+        # Le nom revient en minuscules, hors des motifs : le code le remasque avec le MÊME jeton.
+        res = m.prepare_external("note : jean  dupont doit rappeler", confirm=lambda p: True)
+        self.assertEqual(res.text, f"note : {token} doit rappeler")
+        self.assertEqual(m.leak_check(res.text), [])
+        self.assertEqual(m.unmask(res.text)[0], "note : Jean DUPONT doit rappeler")
+
+    def test_ancien_indice_remasque_au_lieu_de_bloquer(self):
+        # Indice indirect retenu lors d'un envoi précédent, plus signalé par Qwen ensuite.
+        llm = FakeLLM([json.dumps({"indices": [{"passage": "le directeur de l'agence de Brive", "raison": "poste"}]}),
+                       json.dumps({"indices": []})])
+        m = self.masker(llm)
+        m.mask("Avis de le directeur de l'agence de Brive sur le projet.")
+        res = m.prepare_external("Consigne : demander le directeur de l'agence de Brive.", confirm=lambda p: True)
+        self.assertNotIn("Brive", res.text)
+        self.assertIn("[INDICE_1]", res.text)
+
+    def test_indice_du_meme_envoi_remasque_quelle_que_soit_la_casse(self):
+        # Vu en réel : synthèse bloquée (VALEUR_CONNUE) par un indice retenu dans le même masquage.
+        llm = FakeLLM([json.dumps({"indices": [{"passage": "Sans recette", "raison": "x"}]})])
+        m = self.masker(llm)
+        res = m.mask("Idée 3 : Sans recette. Idée 11 : cuisiner sans  recette, avec les restes.")
+        self.assertEqual(m.leak_check(res.text), [])
+        self.assertEqual(res.text.count("[INDICE_1]"), 2)
+
+    def test_valeur_connue_mot_entier_seulement(self):
+        m = self.masker()
+        m.vault.token_for("PERSONNE", "Ali")
+        self.assertEqual(m.leak_check("3 idées réalisables en une semaine"), [])
+        self.assertEqual(m.mask("3 idées réalisables").text, "3 idées réalisables")
+        self.assertEqual(m.leak_check("rappeler ALI demain")[0].kind, "VALEUR_CONNUE")
 
     def test_apercu_obligatoire(self):
         m = self.masker()

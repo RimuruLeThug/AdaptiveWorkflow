@@ -289,7 +289,8 @@ def build_components(
         profile=profile, profile_loader=load_profile, profile_names=list_profiles,
         masker_factory=shared_masker, organizer="agents", workers_provider="agents", reviewers_provider="agents",
         role_label=role_label, role_uses_gemini=role_uses_gemini,
-        role_llms={role: RoleLLM(router, role) for role in ("interface", "cadrage", "routage")})
+        role_llms={role: RoleLLM(router, role) for role in ("interface", "cadrage", "routage")},
+        conversation=s.mode_conversation)
     app_kwargs["langage_libre"] = LangageLibre(
         Reformulator(router, llm), FeedbackJournal((app_state_dir or s.state_dir) / "retours.jsonl"),
         n_exemples=s.feedback_exemples, profil_perso=s.profil_donnees_perso, producteur=routes["worker"].agent)

@@ -113,10 +113,32 @@ class Masker:
             res.warnings.append("détecteur de noms spaCy absent : noms sans civilité ni majuscules "
                                 "repérés seulement via les champs déclarés")
         res.text = self._replace(text, detect(text, declared=declared, name_detector=self.name_detector), res)
+        # Valeurs déjà au coffre (client vu plus tôt, indice indirect retenu lors d'un envoi précédent) :
+        # remasquées par le CODE avec leur jeton, même si aucun détecteur ne les repère cette fois.
+        # Sans cela, le contrôle de fuite bloquait tout envoi contenant un ancien indice que Qwen ne
+        # signalait plus (« envoi bloqué ... (VALEUR_CONNUE) »).
+        res.text = self._known(res.text, res)
         if self.indirect_llm is not None:
             res.text = self._indirect(res.text, res)
+            # Un indice retenu à l'instant peut figurer ailleurs avec une autre casse ou d'autres
+            # espaces (« Sans recette » / « sans recette ») : remasqué aussi, sinon le contrôle de
+            # fuite, insensible à la casse, bloquait l'envoi (vu en réel : synthèse bloquée).
+            res.text = self._known(res.text, res)
         self.vault.save()
         return res
+
+    def _known(self, text: str, res: MaskResult) -> str:
+        for token, original in sorted(self.vault.originals().items(), key=lambda kv: -len(kv[1].strip())):
+            pattern = known_value_pattern(original)
+            if pattern is None:
+                continue
+
+            def sub(m: re.Match, token: str = token) -> str:
+                res.replaced.append((token.strip("[]").rsplit("_", 1)[0], token))
+                return token
+
+            text = _outside_tokens(text, lambda part: pattern.sub(sub, part))
+        return text
 
     def _replace(self, text: str, findings: List[Finding], res: MaskResult) -> str:
         out, pos = [], 0
@@ -153,12 +175,12 @@ class Masker:
         """Repasse les détecteurs ; cherche aussi toute valeur connue du coffre (insensible à la casse)."""
         leaks = detect(masked, declared=declared, name_detector=self.name_detector)
         # Les jetons eux-mêmes ne sont pas des fuites (un client peut s'appeler « Personne »).
-        lowered = TOKEN_RE.sub(lambda m: " " * len(m.group(0)), masked).casefold()
+        blanked = TOKEN_RE.sub(lambda m: " " * len(m.group(0)), masked)
         for token, original in self.vault.originals().items():
-            o = original.strip()
-            if len(o) >= 3 and o.casefold() in lowered:
-                i = lowered.index(o.casefold())
-                leaks.append(Finding("VALEUR_CONNUE", i, i + len(o), masked[i:i + len(o)]))
+            pattern = known_value_pattern(original)
+            m = pattern.search(blanked) if pattern is not None else None
+            if m:  # mot entier seulement : « Ali » au coffre ne bloque pas « réalisable »
+                leaks.append(Finding("VALEUR_CONNUE", m.start(), m.end(), masked[m.start():m.end()]))
         return leaks
 
     # ------------------------------------------------------- envoi externe
@@ -192,6 +214,28 @@ class Masker:
         for m in re.finditer(r"(?<![\[A-Z_])([A-Z]{4,}(?:_[A-Z]+)*_\d+)(?![\]\d])", restored):
             unknown.append(m.group(1))
         return restored, unknown
+
+
+def known_value_pattern(original: str) -> Optional["re.Pattern[str]"]:
+    """Motif d'une valeur du coffre : insensible à la casse, espaces souples, mot entier.
+
+    None pour une valeur trop courte (moins de 3 caractères) : jamais recherchée."""
+    words = (original or "").split()
+    if len("".join(words)) < 3:
+        return None
+    body = r"\s+".join(re.escape(w) for w in words)
+    return re.compile(rf"(?<!\w){body}(?!\w)", re.IGNORECASE)
+
+
+def _outside_tokens(text: str, fn: Callable[[str], str]) -> str:
+    """Applique fn aux morceaux du texte situés hors des jetons déjà posés."""
+    out, pos = [], 0
+    for m in TOKEN_RE.finditer(text):
+        out.append(fn(text[pos:m.start()]))
+        out.append(m.group(0))
+        pos = m.end()
+    out.append(fn(text[pos:]))
+    return "".join(out)
 
 
 def render_preview(res: MaskResult) -> str:

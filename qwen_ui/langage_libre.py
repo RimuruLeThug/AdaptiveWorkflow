@@ -366,7 +366,9 @@ def choose_profile(proposed: str, names: Sequence[str], *, current: Optional[str
 
 # ------------------------------------------------------------- retours libres
 
-SKIP_REASONS = {"", "sans raison", "pas de raison", "aucune", "aucune raison", "passer", "non", "rien", "-", "skip"}
+# « o », « oui », « ok » : réponse réflexe à une question o/n, jamais une raison (vu en réel : « raison : o »).
+SKIP_REASONS = {"", "sans raison", "pas de raison", "aucune", "aucune raison", "passer", "non", "rien", "-", "skip",
+                "o", "oui", "ok", "n", "pas d'idée", "je sais pas", "je ne sais pas", "aucune idée"}
 
 
 def is_skip_reason(text: str) -> bool:

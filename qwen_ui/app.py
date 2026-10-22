@@ -1,8 +1,10 @@
 """Terminal de l'interface (V3 : rôles sur Claude Haiku par défaut, Qwen local en repli).
 
 Commandes explicites « /nom » (inchangées) ; texte libre : mode à commandes proposées
-(sans langage_libre) ou langage libre (qwen_ui/langage_libre.py : reformulation sous
-accord de session, profil implicite, retours libres sur les idées).
+(sans langage_libre), langage libre (qwen_ui/langage_libre.py : reformulation sous
+accord de session, profil implicite, retours libres sur les idées) ou, par défaut,
+conversation (qwen_ui/conversation.py : on parle sans aucune commande, mémoire des
+derniers échanges, confirmations « oui / non / correction »).
 """
 
 from __future__ import annotations
@@ -19,8 +21,10 @@ from gemini_client import GeminiDailyQuotaError, GeminiError
 from local_llm import LocalLLM, LocalLLMError
 from orchestrator import Orchestrator, OrchestrationError, RunReport
 from qwen_ui.fiche import FicheProjet, cadrer, load_fiche, save_fiche
-from qwen_ui.presenter import render_detail, render_report, summarize
-from qwen_ui.langage_libre import (FeedbackItem, LangageLibre, choose_profile, clean_reason, explicit_profile,
+from qwen_ui.presenter import STATUS_FR, render_detail, render_report, summarize
+from qwen_ui import conversation as conv
+from qwen_ui.langage_libre import (PROVIDER_LABELS, FeedbackItem, LangageLibre, choose_profile, clean_reason,
+                                   explicit_profile,
                                    feedback_examples, feedback_record, interpret_feedback, personal_kinds,
                                    redact, render_plan, short)
 from qwen_ui.router import COMMANDS, CONFIRMED_ACTIONS, Command, parse_command, route, route_libre
@@ -57,6 +61,10 @@ votre accord. /aide pour les commandes."""
 YES = {"o", "oui", "y", "yes"}
 
 
+def _score(value: Optional[float]) -> str:
+    return "sans note" if value is None else f"{value:.1f}/10"
+
+
 class App:
     def __init__(
         self,
@@ -85,6 +93,7 @@ class App:
         reviewers_provider: str = "gemini",
         role_label: Optional[Callable[[str], str]] = None,
         role_uses_gemini: Optional[Callable[[str], bool]] = None,
+        conversation: bool = False,
     ) -> None:
         self.llm = llm
         # Agents interchangeables (agents.py) : modèle par rôle ; rôle absent = llm, comme avant.
@@ -94,7 +103,11 @@ class App:
         self._quota_info = quota_info  # () -> (utilisées, limite)
         self._fiche_path = Path(state_dir) / "fiche_projet.json"
         self._in = input_fn
-        self._out = output_fn
+        self._raw_out = output_fn
+        # Pendant un tour de conversation, les mentions de commandes « /… » sont reformulées
+        # en phrases à dire (conversation.naturalize) ; jamais pour une commande tapée.
+        self._talking = False
+        self._carry: Optional[str] = None  # réponse libre à une confirmation : traitée ensuite
         # « agents » (V3) : organisateur, workers, relecteurs et grand modèle passent par les rôles
         # (agents.py), qui appliquent eux-mêmes la politique de données ; « gemini » / « claude » :
         # client direct choisi par /organisateur ou /grand.
@@ -123,12 +136,17 @@ class App:
         self._masker: Optional[Masker] = None
         # Langage libre (None : mode à commandes d'avant, inchangé).
         self._ll = langage_libre
+        # Conversation (exige le langage libre : accord de session, journal des retours).
+        self._history: Optional[conv.History] = conv.History() if conversation and langage_libre else None
         # Donnée personnelle détectée dans le texte libre : aucun envoi externe pour la session,
         # même si le profil restrictif n'a pas pu être chargé. Seul /profil explicite la lève.
         self.personal_lock = False
         self._profile_infos: Optional[List[Tuple[str, str]]] = None
         # Refus remontés à l'organisateur (après le profil : les déclarés servent au filtrage perso).
         self.refusals: List[dict] = self._load_refusals()
+
+    def _out(self, text: str) -> None:
+        self._raw_out(conv.naturalize(text) if self._talking else text)
 
     def _llm(self, role: str) -> LocalLLM:
         """Modèle local du rôle (routage, cadrage, interface) : llm sauf affectation configurée."""
@@ -137,11 +155,20 @@ class App:
     # ------------------------------------------------------------- boucle
 
     def loop(self) -> None:
-        self._out(BANNER_LIBRE if self._ll else BANNER)
+        self._out(conv.BANNER if self._history is not None else BANNER_LIBRE if self._ll else BANNER)
+        if self._history is not None:
+            if self.fiche:
+                self._out(f"\nOn reprend ton projet : {self.fiche.objectif}")
+            if self.profile:
+                self._out(f"(Profil : {self.profile.name}.)")
+            return self._loop_lines()
         if self.profile:
             self._out(f"\nProfil : {self.profile.name} — {self.profile.description}")
         if self.fiche:
             self._out(f"Fiche projet chargée : {self.fiche.objectif}")
+        self._loop_lines()
+
+    def _loop_lines(self) -> None:
         while True:
             try:
                 line = self._in("\n> ")
@@ -156,8 +183,10 @@ class App:
         line = line.strip()
         if not line:
             return True
+        cmd = parse_command(line)
+        self._talking = cmd is None and self._history is not None
+        self._carry = None
         try:
-            cmd = parse_command(line)
             if cmd is None:
                 return self._free_text(line)
             return self._dispatch(cmd)
@@ -182,11 +211,15 @@ class App:
             self._out(f"Tâche refusée par le bus : {exc}")
         except (GeminiError, RateLimiterError) as exc:
             self._out(f"Erreur Gemini : {exc}")
+        finally:
+            self._talking = False
         return True
 
     # ------------------------------------------------------------ routage
 
     def _free_text(self, line: str) -> bool:
+        if self._history is not None:
+            return self._converse(line)
         if self._ll is not None:
             return self._libre(line)
         proposal = route(self._llm("routage"), line, self.fiche.to_context() if self.fiche else "")
@@ -200,10 +233,25 @@ class App:
         return self._dispatch(proposal.command)
 
     def _confirm(self, question: str) -> bool:
+        if self._talking:
+            return self._confirm_natural(question)
         try:
             return self._in(f"{question} (o/n) ").strip().lower() in YES
         except (EOFError, KeyboardInterrupt):
             return False
+
+    def _confirm_natural(self, question: str) -> bool:
+        """Conversation : « oui », « vas-y », « non »... ; toute autre réponse est une correction,
+        traitée comme un nouveau message une fois l'étape en cours abandonnée."""
+        try:
+            answer = self._in(f"{question} (oui/non) ")
+        except (EOFError, KeyboardInterrupt):
+            return False
+        verdict = conv.parse_yes_no(answer)
+        if verdict is None:
+            self._carry = answer.strip()
+            return False
+        return verdict
 
     def _dispatch(self, cmd: Command) -> bool:
         handler = getattr(self, f"_cmd_{cmd.name}", None)
@@ -417,9 +465,299 @@ class App:
                             declared=declared)
             for it in items])
 
+    # -------------------------------------------------------- conversation
+
+    def _converse(self, line: str, depth: int = 0) -> bool:
+        """Un message de conversation : le modèle propose UNE action, le code valide et confirme."""
+        if conv.is_quit(line):
+            return self._cmd_quitter("")
+        if conv.is_help(line):
+            self._cmd_aide("")
+            return True
+        names = [n for n, _ in self._profiles()]
+        # 1. Données personnelles détectées par le CODE, avant tout envoi : profil restrictif prioritaire.
+        kinds = personal_kinds(line, self._declared())
+        if kinds:
+            self._enter_personal(kinds)
+        # 2. Profil demandé explicitement : un profil perso est chargé AVANT tout envoi.
+        named = explicit_profile(line, names)
+        named_profile = self._load_profile_or_none(named) if named else None
+        if named_profile is not None and named_profile.personal_data:
+            self._auto_profile(named, named_profile)
+            named_profile = None
+        # 3. Un seul appel : compréhension + action proposée (ou réponse, ou question).
+        self._history.user(line)
+        exemples = self._exemples()
+        idea_ids = [i for i, _ in self._ideas_listing()]
+        if conv.looks_like_feedback(line, idea_ids):
+            proposal = conv.ConvProposal("retour")  # reconnu par le code : aucun appel de compréhension
+        else:
+            llm = self._conversation_llm()
+            n_outputs = len(self.last_report.accepted) + len(self.last_report.rejected) if self.last_report else 0
+            proposal = conv.converse(llm, line, history=self._history.render(skip_last=True),
+                                     state=self._conv_state(), profiles=self._profiles(), exemples=exemples,
+                                     n_outputs=n_outputs, idea_ids=idea_ids)
+        if named_profile is not None and proposal.action != "retour":  # jamais pour un retour
+            self._auto_profile(named, named_profile)
+        if self._act(proposal, line, exemples, named) is False:
+            return False
+        # 4. Réponse libre à une confirmation (« plutôt 20 idées ») : traitée comme un nouveau message.
+        carry, self._carry = self._carry, None
+        if carry and depth < 2:
+            return self._converse(carry, depth + 1)
+        return True
+
+    def _say(self, text: str) -> None:
+        self._out(text)
+        self._history.assistant(text)
+
+    def _conversation_llm(self) -> LocalLLM:
+        """Agent du rôle « routage » ; s'il est externe, l'accord de session est demandé UNE fois.
+
+        Sans accord : le Qwen local répond directement (aucune question à chaque message)."""
+        role = self._llm("routage")
+        if self._personal() or self._ll is None:
+            return role  # profil perso : le routeur écarte lui-même tout agent externe
+        router = self._ll.reformulator.router
+        route = self._external_route()
+        if route is None:
+            return role
+        provider = router.registry.spec(route.agent).policy_provider
+        if not router.has_session_consent("routage", provider) and not self._ll.reformulator.asked:
+            self._ask_consent(provider, route.agent)
+        if router.has_session_consent("routage", provider):
+            return role
+        router.log_choice("routage", "qwen", "ok", "conversation : pas d'accord de session, Qwen local")
+        return self.llm
+
+    def _external_route(self):
+        """Route du rôle « routage » si son agent principal est externe ET disponible, sinon None.
+
+        Agent externe indisponible (Claude Code absent, clé Gemini manquante) : rien à autoriser,
+        le routeur passe de lui-même au repli local."""
+        router = self._ll.reformulator.router
+        route = router.routes.get("routage")
+        if route is None or not router.registry.spec(route.agent).external:
+            return None
+        try:
+            if router.registry.get(route.agent).unavailable_reason():
+                return None
+        except Exception:  # agent impossible à construire : traité comme indisponible
+            return None
+        return route
+
+    def _external_label(self, provider: str) -> str:
+        name = PROVIDER_LABELS.get(provider, provider)
+        return f"{name} (via ton abonnement)" if provider == "claude" else f"{name} (quota gratuit)"
+
+    def _ask_consent(self, provider: str, agent: str) -> bool:
+        r = self._ll.reformulator
+        r.asked = True
+        label = self._external_label(provider)
+        ok = self._confirm(f"Pour bien te comprendre, je peux m'appuyer sur {label} pendant cette session. Les "
+                           "données personnelles repérées sont masquées avant chaque envoi. D'accord ? (sinon tout "
+                           "se fait sur ton PC avec Qwen, un peu plus lentement)")
+        if ok:
+            try:
+                r.router.grant_session_consent_all(provider)
+            except PolicyError:
+                ok = False
+        r.router.log_choice("routage", agent, "accord_session_donne" if ok else "accord_session_refuse",
+                            "question unique de session (conversation)")
+        if ok:
+            self._out(f"Merci ! Je m'appuie sur {label} (« garde tout en local » pour arrêter).")
+        elif self._carry is None:
+            self._out("D'accord : je te comprends ici, sur ton PC, avec Qwen.")
+        return ok
+
+    def _act(self, p: "conv.ConvProposal", line: str, exemples: str, named: Optional[str]) -> Optional[bool]:
+        a = p.action
+        if a == "discussion":
+            self._say(p.reply)
+        elif a == "retour":
+            self._history.assistant("(avis sur les idées notées)")
+            self._retour(line, exemples)
+        elif a == "aide":
+            self._cmd_aide("")
+        elif a == "voir_fiche":
+            self._say("Voici la fiche de ton projet :\n" + self.fiche.render() if self.fiche else
+                      "Pas encore de fiche projet : décris-moi ton projet et je la prépare.")
+        elif a == "confidentialite":
+            self._privacy_choice(p.argument)
+        elif a in ("tache", "fiche"):
+            target = None
+            if named is None:
+                target = choose_profile(p.profile, [n for n, _ in self._profiles()],
+                                        current=self.profile.name if self.profile else None,
+                                        current_personal=self._personal())
+            if a == "tache":
+                self._task_conversation(p.argument, target)
+            else:
+                if target:
+                    self._auto_profile(target)
+                self._fiche_conversation(p.argument)
+        elif a == "revue":
+            self._review_conversation()
+        elif a == "dedup":
+            self._cmd_dedup("")
+            if self.last_dedup is not None:
+                self._history.assistant(f"Doublons regroupés : {len(self.last_dedup.kept)} idée(s) distinctes.")
+                self._out("Quand tu veux, dis « fais-les noter ».")
+        elif a == "escalader":
+            self._history.assistant(f"Approfondissement de l'idée {p.argument} demandé.")
+            self._cmd_escalader(p.argument)
+        elif a in ("detail", "resume", "quota", "workers"):
+            getattr(self, f"_cmd_{a}")(p.argument)
+        return True
+
+    def _privacy_choice(self, choice: str) -> None:
+        r = self._ll.reformulator
+        if choice == "local":
+            r.revoke("demande de l'utilisateur (conversation)")
+            r.asked = True
+            self._say("C'est noté : je te comprends ici, sur ton PC, avec Qwen. Les travaux que tu lances (idées, "
+                      "notation) partent toujours vers les agents configurés, et seulement après ton « oui ».")
+            return
+        if self._personal():
+            self._say("Pas possible : on travaille sur des données personnelles, donc tout reste sur ton PC.")
+            return
+        router = r.router
+        route = self._external_route()
+        if route is None:
+            self._say("Il n'y a pas d'agent externe disponible pour la conversation : je reste sur ton PC.")
+            return
+        provider = router.registry.spec(route.agent).policy_provider
+        if router.has_session_consent("routage", provider):
+            self._say(f"C'est déjà le cas : je m'appuie sur {self._external_label(provider)}.")
+            return
+        self._ask_consent(provider, route.agent)
+
+    def _privacy_line(self) -> str:
+        if self._personal():
+            return "on travaille sur des données personnelles, rien ne quitte ton PC."
+        router = self._ll.reformulator.router
+        route = self._external_route()
+        if route is None:
+            return "je te comprends ici, sur ton PC."
+        provider = router.registry.spec(route.agent).policy_provider
+        label = self._external_label(provider)
+        if router.has_session_consent("routage", provider):
+            return f"je m'appuie sur {label} pour te comprendre (« garde tout en local » pour arrêter)."
+        return (f"je te comprends ici, sur ton PC, avec Qwen (« tu peux utiliser {PROVIDER_LABELS.get(provider, provider)} » "
+                "pour l'autoriser).")
+
+    def _task_conversation(self, consigne: str, target: Optional[str]) -> None:
+        who = self._role_label("organisateur") if self.organizer == "agents" else self.organizer
+        extra = f" (profil {target})" if target else ""
+        self._history.assistant(f"Proposé : confier aux agents « {consigne} »{extra}.")
+        if not self._confirm(f"Je confie ça aux agents ({who}){extra} :\n  « {short(consigne, 1500)} »\nOn y va ?"):
+            if self._carry is None:
+                self._say("D'accord, je ne lance rien.")
+            return
+        if target:
+            self._auto_profile(target)
+        self._cmd_tache(consigne)
+        report = self.last_report
+        if report is None:
+            return
+        ideas = collect_ideas([o.text for o in report.accepted])
+        listing = "; ".join(f"[{i.id}] {short(i.titre, 60)}" for i in ideas[:15])
+        self._history.assistant(f"Résultat : {STATUS_FR.get(report.status, report.status)}, {len(ideas)} idée(s)"
+                                + (f" : {listing}" if listing else "") + ".")
+        if ideas:
+            self._out(f"Voilà, {len(ideas)} idée(s) reçue(s). Tu peux me dire « regroupe les doublons » puis « fais-les "
+                      "noter », ou « montre la sortie 1 » pour tout lire.")
+        elif report.accepted:
+            self._out("C'est fait. Dis « résume » pour un résumé, ou « montre la sortie 1 » pour tout lire.")
+        else:
+            self._out("Ça n'a pas abouti (voir les sorties rejetées ci-dessus). Tu veux que je réessaie, "
+                      "peut-être autrement ?")
+
+    def _fiche_conversation(self, description: str) -> None:
+        self._out("Je prépare la fiche de ton projet…")
+        fiche = cadrer(self._llm("cadrage"), description, self._exemples())
+        self._out("Voici ce que je retiens :\n" + fiche.render())
+        self._history.assistant("Fiche proposée :\n" + fiche.to_context())
+        if self._confirm("C'est bien ça ?"):
+            self.fiche = fiche
+            save_fiche(fiche, self._fiche_path)
+            self._say("C'est noté, les agents la recevront à chaque demande. Tu veux que je lance une première "
+                      "série d'idées ?")
+        elif self._carry is None:
+            self._say("D'accord, je ne l'enregistre pas. Redis-moi ton projet autrement si tu veux.")
+
+    def _review_conversation(self) -> None:
+        if not self.last_report:
+            self._say("Il n'y a pas encore d'idées à noter : demande-moi d'abord des idées.")
+            return
+        who = self._role_label("relecteur") if self._reviewers_provider == "agents" else self._reviewers_provider
+        self._history.assistant("Proposé : faire noter les idées par les relecteurs.")
+        if not self._confirm(f"Je fais noter les idées par les relecteurs ({who}). On y va ?"):
+            if self._carry is None:
+                self._say("D'accord, on ne les note pas pour l'instant.")
+            return
+        self._cmd_revue("")
+        if self.last_review is None:
+            return
+        listing = "; ".join(f"[{v.idea.id}] {short(v.idea.titre, 50)} ({_score(v.weighted_score)}"
+                            f"{', approuvée' if v.approved else ''})" for v in self.last_review.verdicts[:15])
+        self._history.assistant(f"Idées notées : {listing}.")
+        self._out("Dis-moi lesquelles tu gardes ou jettes, par exemple « je garde la 2, la 5 est trop chère ».")
+
+    def _conv_state(self) -> str:
+        """État du travail, résumé par le CODE pour le modèle de conversation (court, sans les textes)."""
+        name = self.profile.name if self.profile else "(aucun)"
+        lines = [f"Profil : {name}" + (" (données personnelles : tout reste sur le PC)" if self._personal() else "")]
+        if self.fiche:
+            lines.append("Fiche projet enregistrée :\n" + self.fiche.to_context())
+        else:
+            lines.append("Fiche projet : aucune")
+        if self.last_report:
+            r = self.last_report
+            outputs = r.accepted + r.rejected
+            ideas = collect_ideas([o.text for o in r.accepted])
+            lines.append(f"Dernier travail des agents : {STATUS_FR.get(r.status, r.status)}, {len(outputs)} sortie(s) "
+                         f"(numéros 1 à {len(outputs)}), {len(ideas)} idée(s) produite(s)")
+            lines += [f"  sortie {i} : {o.worker} — {short(o.instruction, 80)}" for i, o in enumerate(outputs[:10], 1)]
+            lines += [f"  idée : {short(i.titre, 80)}" for i in ideas[:15]]
+        else:
+            lines.append("Dernier travail des agents : aucun")
+        if self.last_dedup is not None:
+            lines.append(f"Doublons regroupés : oui, {len(self.last_dedup.kept)} idée(s) distinctes")
+        if self.last_review:
+            decided = self._decisions_of(self.last_review.review_id)
+            lines.append("Idées notées par les relecteurs (numéro : titre — avis) :")
+            for v in self.last_review.verdicts[:20]:
+                d = {"validée": ", gardée par l'utilisateur", "refusée": ", jetée par l'utilisateur"}.get(
+                    decided.get(v.idea.id, ""), "")
+                lines.append(f"  {v.idea.id} : {short(v.idea.titre, 80)} — {_score(v.weighted_score)}, "
+                             f"{'approuvée' if v.approved else 'non approuvée'}{d}")
+        if self.last_escalation is not None:
+            e = self.last_escalation
+            lines.append(f"Dernière idée approfondie : {short(e.contract.promesse, 80)} — "
+                         f"{'acceptée' if e.accepted else 'refusée'}")
+        return "\n".join(lines)
+
+    def _decisions_of(self, review_id: str) -> dict:
+        """Dernière décision de l'utilisateur par idée de cette revue."""
+        out: dict = {}
+        if not self._decisions_path.exists():
+            return out
+        for raw in self._decisions_path.read_text(encoding="utf-8").splitlines():
+            try:
+                rec = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(rec, dict) and rec.get("review_id") == review_id:
+                out[rec.get("idea_id")] = rec.get("decision", "")
+        return out
+
     # ----------------------------------------------------------- commandes
 
     def _cmd_aide(self, arg: str) -> None:
+        if self._talking:
+            self._out(conv.help_text("Confidentialité : " + self._privacy_line()))
+            return
         width = max(len(n) for n in COMMANDS)
         self._out("Commandes :\n" + "\n".join(f"  /{n.ljust(width)}  {d}" for n, d in COMMANDS.items()))
         if self._ll is None:
@@ -706,7 +1044,10 @@ class App:
             self._out("Profils non configurés.")
             return
         profile = self._profile_loader(name)  # lève ProfileError
+        leaving_personal = self._personal() and not profile.personal_data
         self._set_profile(profile)
+        if leaving_personal and self._history is not None:
+            self._history.clear()  # l'historique ne doit jamais partir vers un agent externe
         if self.personal_lock:
             self._filter_refusals()  # sortie du verrou « données personnelles »
         self.personal_lock = False  # choix explicite de l'utilisateur

@@ -199,6 +199,10 @@ class Settings:
     # texte libre (il doit déclarer donnees_personnelles=true, sinon le code bloque quand même
     # tout envoi externe pour la session).
     profil_donnees_perso: str = "bureautique_fictive"
+    # Mode conversation (qwen_ui/conversation.py) : on parle à l'assistant sans aucune commande,
+    # avec mémoire des derniers échanges et confirmations « oui / non / correction ».
+    # False (MODE_CONVERSATION=0) : langage libre d'avant, à commandes proposées.
+    mode_conversation: bool = True
 
 
 def load_settings() -> Settings:
@@ -246,4 +250,5 @@ def load_settings() -> Settings:
         agent_declarations=os.environ.get("AGENT_DECLARATIONS", "").strip(),
         feedback_exemples=max(0, _env_int("FEEDBACK_EXEMPLES", d.feedback_exemples)),
         profil_donnees_perso=os.environ.get("PROFIL_DONNEES_PERSO", "").strip() or d.profil_donnees_perso,
+        mode_conversation=os.environ.get("MODE_CONVERSATION", "1").strip().lower() not in ("0", "false", "non", "off"),
     )

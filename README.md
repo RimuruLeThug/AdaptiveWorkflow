@@ -84,11 +84,24 @@ Your API key lives **only** in your local `.env` file. It is listed in `.gitigno
 
 Start the terminal (`python -m qwen_ui` or `start.bat`). At startup the program checks Claude Code, Ollama and the Gemini key, and only **warns** when one is missing: an unavailable agent is skipped in favour of its fallback (no Claude: everything goes to the local Qwen; no Qwen: no local fallback and no personal-data profile). On exit, the local model is unloaded from VRAM.
 
-Typical session: describe the project with `/fiche`, validate it, run `/tache <instruction>`, then `/dedup`, `/revue`, `/valider` or `/refuser`. For a validated idea, `/escalader <n>` is the optional last step.
+By default you **talk to the assistant normally, without any command** (conversation mode, below). The `/…` commands still work.
 
-### Free-language mode
+### Conversation mode (default)
 
-Without a leading `/`, you can talk freely.
+You write as you would to a person (in French); the assistant understands the intent, remembers the last exchanges and asks before any costly work.
+
+- **One call per message.** The `routage` role agent (Claude Haiku by default, local Qwen as fallback) gets the message, the recent history (12 turns, in memory only, never written to disk) and a code-built summary of the work state (sheet, ideas, scores, decisions). It proposes **one** whitelisted action (reply or ask a question, describe the project, ask for ideas, deduplicate, review, give feedback, show, summarise, escalate, quota, privacy); the code checks it (existing numbers, arguments).
+- **Natural confirmations.** "oui", "ok", "vas-y", "non", "laisse tomber"… Any other answer is taken as a correction ("plutôt 15 idées"): the step is dropped and the answer handled as a new message that sees the previous proposal (at most two chained corrections). The exact instruction sent to the agents is always shown before "On y va ?".
+- **Session consent.** If the conversation agent is external (Claude Haiku by default) and available, the question is asked **once**, on the first message. "non": the local Qwen understands you, without a question per message; "garde tout en local" says it later, "tu peux utiliser Claude" asks again. No Claude Code: nothing is asked, Qwen answers.
+- **Personal data.** Same rule as below: code-side detection, restrictive profile, everything local. Leaving that profile (`/profil <name>`) clears the conversation history.
+- **No command shown.** System messages that quoted a command are rewritten as phrases to say. Typed commands (`/aide`, `/quota`…) work and display as before.
+- "aide" and "au revoir" (and variants) are recognised by the code, without a model call. `MODE_CONVERSATION=0` restores the free-language mode below.
+
+Validated with unit tests and doubles (including a full scenario without any command); not yet with real models: run `pilot.bat`, whose default scenario is now a conversation (`pilot.bat --commandes` for the old path).
+
+### Free-language mode (`MODE_CONVERSATION=0`)
+
+Previous mode, kept: without a leading `/`, the message is rephrased and a command is proposed.
 
 1. **Rephrasing and session consent.** A `reformulation` agent (Claude Haiku by default; `AGENT_REFORMULATION=qwen` keeps everything local) rewrites your message into a clear request. On the first message, the program asks **once** for a session consent for that provider: it covers rephrasing **and the other free-text roles** assigned to it (routing, framing, summaries, deduplication, repair, promise check), without a confirmation for each send. Refusing, or `/accord non`, keeps rephrasing local and makes every external send of the other roles ask for confirmation (y/n, with a masked preview). Every external send is masked and checked for leaks first, consent or not.
 2. **Routing.** The routing agent proposes one action from a whitelist (`tache`, `fiche`, `dedup`, `revue`, `retour`, `detail`, `resume`, `organisateur`, `quota`, `workers`, `aide`, `discussion`). The code validates it. Costly or state-changing actions (`tache`, `revue`, `fiche`, `organisateur`) are shown and need your `o`.

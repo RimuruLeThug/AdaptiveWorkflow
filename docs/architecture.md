@@ -22,7 +22,7 @@ The code decides, the models propose. Models never call each other, never call G
 | `verify/` | `schema.py` (JSON schema check), `repair.py` (deterministic repair, then Qwen 2.5 3B with a fidelity check), `promise.py` (promise check), `basic.py` (output check of workers), `haiku.py` (Claude verification, disabled). |
 | `privacy/` | `detectors.py` (deterministic detection), `masker.py` (masking, preview, leak check, re-injection), `vault.py` (encrypted token vault: DPAPI on Windows, Fernet elsewhere), `policy.py` (provider policy), `__main__.py` (`selftest`, `apercu`). |
 | `profiles/` | `loader.py` validates `profil.json` and `donnees.json`; one folder per profile. |
-| `qwen_ui/` | Terminal. `app.py` (commands, free text, confirmations), `router.py` (commands, whitelist, routing prompts), `langage_libre.py` (rephrasing, implicit profile, feedback journal), `fiche.py` (project sheet), `presenter.py` (display), `bootstrap.py` (assembly, startup checks), `__main__.py` (entry point). |
+| `qwen_ui/` | Terminal. `app.py` (commands, free text, confirmations), `conversation.py` (default conversation mode: one-call understanding with in-memory history, natural yes/no/correction, command mentions rewritten as phrases), `router.py` (commands, whitelist, routing prompts), `langage_libre.py` (rephrasing, implicit profile, feedback journal), `fiche.py` (project sheet), `presenter.py` (display), `bootstrap.py` (assembly, startup checks), `__main__.py` (entry point). |
 | `pilot.py` | Replays a scenario with automatic "o" answers and writes a transcript and measurements to `logs/`. |
 | `calibrate.py` | Reads logs and decisions, suggests thresholds. Read-only. |
 

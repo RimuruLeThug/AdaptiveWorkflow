@@ -71,6 +71,7 @@ Model names must match `ollama list`. If the model is missing, a startup warning
 |---|---|---|
 | `FEEDBACK_EXEMPLES` | `5` | Number of recent feedback decisions given to Qwen as examples. `0` disables them. Never used in a personal-data profile. |
 | `PROFIL_DONNEES_PERSO` | `bureautique_fictive` | Restrictive profile the code switches to when personal data is detected in free text |
+| `MODE_CONVERSATION` | `1` | Conversation mode: talk to the assistant without any command (history in memory, natural confirmations). `0` restores the free-language mode where a command is proposed. |
 
 ## Agents
 

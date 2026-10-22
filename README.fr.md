@@ -84,11 +84,37 @@ Votre clé API se trouve **uniquement** dans votre fichier `.env` local. Il est 
 
 Lancez le terminal (`python -m qwen_ui` ou `start.bat`). Au démarrage, le programme vérifie Claude Code, Ollama et la clé Gemini, et **avertit** seulement s'il en manque un : un agent indisponible est sauté au profit de son repli (Claude absent : tout passe au Qwen local ; Qwen absent : pas de repli local ni de profil « données personnelles »). À la sortie, le modèle local est déchargé de la VRAM.
 
-Session type : décrivez le projet avec `/fiche`, validez-le, lancez `/tache <consigne>`, puis `/dedup`, `/revue`, `/valider` ou `/refuser`. Pour une idée validée, `/escalader <n>` est l'étape facultative suivante.
+Par défaut, **on parle à l'assistant normalement, sans aucune commande** (mode conversation, ci-dessous). Les commandes `/…` restent disponibles pour qui les connaît.
 
-### Mode langage libre
+### Mode conversation (par défaut)
 
-Sans `/` en début de ligne, vous pouvez parler librement.
+Vous écrivez comme à une personne ; l'assistant comprend l'intention, se souvient des derniers échanges et vous demande votre accord avant tout travail qui coûte quelque chose. Exemple de session :
+
+```
+> salut, j'ai un projet d'appli Android gratuite pour réduire le gaspillage à la maison, hors ligne, je suis seul et j'ai 3 mois
+Voici ce que je retiens : (fiche projet)
+C'est bien ça ? (oui/non) oui
+> vas-y, trouve-moi 12 idées dont 2 un peu folles
+Je confie ça aux agents (claude_haiku …) : « Propose 12 idées … » On y va ? (oui/non) plutôt 15
+Je confie ça aux agents (claude_haiku …) : « Propose 15 idées … » On y va ? (oui/non) vas-y
+> regroupe les doublons
+> fais-les noter
+> je garde la 2 et la 5, la 1 est trop compliquée
+> approfondis la 2
+```
+
+- **Un seul appel par message.** L'agent du rôle `routage` (Claude Haiku par défaut, Qwen local en repli) reçoit le message, l'historique récent (12 échanges, en mémoire seulement, jamais sur disque) et un état du travail résumé par le code (fiche, idées, notes, décisions). Il propose **une** action d'une liste blanche (répondre ou poser une question, décrire le projet, demander des idées, regrouper, faire noter, donner son avis, afficher, résumer, approfondir, quota, confidentialité) ; le code la vérifie (numéros existants, arguments).
+- **Confirmations en langage naturel.** « oui », « ok », « vas-y », « non », « laisse tomber »… Toute autre réponse est prise comme une correction (« plutôt 15 idées ») : l'étape est abandonnée et la réponse traitée comme un nouveau message, qui voit la proposition précédente. Deux corrections enchaînées au plus. La consigne exacte envoyée aux agents est toujours affichée avant le « On y va ? ».
+- **Accord de session.** Si l'agent de conversation est externe (Claude Haiku par défaut) et disponible, la question est posée **une fois** au premier message. « non » : l'assistant vous comprend avec le Qwen local, sans question à chaque message ; « garde tout en local » le dit en cours de route, « tu peux utiliser Claude » le redemande. Claude Code absent : rien n'est demandé, Qwen répond.
+- **Données personnelles.** Même règle que ci-dessous : détection par le code, profil restrictif, tout en local. Quitter ce profil (`/profil <nom>`) vide l'historique de conversation.
+- **Plus de commandes affichées.** Les messages qui citaient une commande sont reformulés en phrases à dire (« dis « fais-les noter » »). Les commandes tapées (`/aide`, `/quota`…) fonctionnent et s'affichent comme avant.
+- `aide` et `au revoir` (et variantes) sont reconnus par le code, sans appel de modèle. `MODE_CONVERSATION=0` revient au mode langage libre ci-dessous.
+
+Validé par tests unitaires avec doublures (scénario complet sans aucune commande compris) ; pas encore avec des modèles réels : lancez `pilot.bat`, dont le scénario par défaut est désormais une conversation (`pilot.bat --commandes` pour l'ancien parcours).
+
+### Mode langage libre (`MODE_CONVERSATION=0`)
+
+Ancien mode, conservé : sans `/` en début de ligne, le message est reformulé puis une commande vous est proposée.
 
 1. **Reformulation et accord de session.** Un agent `reformulation` (Claude Haiku par défaut ; `AGENT_REFORMULATION=qwen` garde tout en local) transforme votre message en une demande claire. Au premier message, le programme demande **une seule fois** un accord de session pour ce fournisseur : il couvre la reformulation **et les autres rôles en texte libre** qui lui sont confiés (routage, cadrage, résumés, dédoublonnage, réparation, contrôle de promesse), sans confirmation à chaque envoi. Refuser, ou `/accord non`, garde la reformulation en local et fait confirmer (o/n, avec aperçu masqué) chaque envoi externe des autres rôles. Chaque envoi externe est masqué et contrôlé contre les fuites avant de partir, accord ou pas.
 2. **Routage.** L'agent de routage propose une action parmi une liste blanche (`tache`, `fiche`, `dedup`, `revue`, `retour`, `detail`, `resume`, `organisateur`, `quota`, `workers`, `aide`, `discussion`). Le code la valide. Les actions coûteuses ou qui changent l'état (`tache`, `revue`, `fiche`, `organisateur`) vous sont présentées et demandent votre `o`.
@@ -126,7 +152,7 @@ Appels avec les défauts V3 (chaque rôle sur Claude Haiku) ; un rôle réaffect
 
 Alias : `/task`, `/tâche`, `/help`, `/org`, `/review`, `/doublons`, `/détail`, `/résumé`, `/q`, `/exit`, `/quit`.
 
-Sans `/`, les commandes ci-dessus peuvent aussi être demandées en langage libre (voir plus haut). `/escalader`, `/grand`, `/masquer`, `/profil`, `/valider`, `/refuser`, `/accord`, `/donnees` et `/quitter` ne sont accessibles qu'en commande explicite (les décisions peuvent quand même être données en langage naturel après une revue).
+En mode conversation, tout le parcours se fait sans commande, `escalader` compris (« approfondis la 2 », avec ses deux confirmations). Restent réservés aux commandes : `/organisateur`, `/grand`, `/masquer`, `/donnees`, `/fiche effacer` et l'accord de session donné sans question (`/accord oui`). En mode langage libre (`MODE_CONVERSATION=0`), `/escalader`, `/grand`, `/masquer`, `/profil`, `/valider`, `/refuser`, `/accord`, `/donnees` et `/quitter` ne sont accessibles qu'en commande explicite (les décisions peuvent quand même être données en langage naturel après une revue).
 
 ## Agents interchangeables
 
@@ -239,10 +265,10 @@ escalation.py        contrat, grand modèle, contrôles
 verify/              schéma JSON, réparation, contrôle de promesse ; haiku.py (vérification par Claude Haiku, désactivée)
 privacy/             détection, masquage, contrôle de fuite, coffre chiffré, politique des fournisseurs
 profiles/            un dossier par cas d'usage ; loader.py les valide
-qwen_ui/             terminal : app.py, router.py, langage_libre.py, fiche.py, presenter.py, bootstrap.py
+qwen_ui/             terminal : app.py, conversation.py, router.py, langage_libre.py, fiche.py, presenter.py, bootstrap.py
 pilot.py             rejoue un scénario sans saisie et mesure
 calibrate.py         suggestions de seuils à partir de vos runs (lecture seule)
-tests/               19 modules de tests, aucun réseau ni modèle réel requis (garde-fou dans tests/__init__.py)
+tests/               20 modules de tests, aucun réseau ni modèle réel requis (garde-fou dans tests/__init__.py)
 docs/                documentation détaillée (en anglais)
 README.md, README.fr.md, CHANGELOG.md, GUIDE_PROMPTS_QWEN_V1.md (comment rédiger fiches et consignes), LICENSE
 requirements.txt     dépendances facultatives (tzdata ; spaCy et cryptography sont facultatifs)
@@ -260,12 +286,13 @@ Le parcours d'une demande, les journaux et les quotas sont décrits dans [docs/a
 python -m unittest discover -s tests -t .
 ```
 
-Ou `tests.bat`, qui écrit le résultat dans `logs\tests.txt`. La suite compte environ 490 fonctions de test (`def test_`) réparties dans 19 modules. Elle n'a besoin ni de réseau ni de modèle réel : Ollama, Gemini et Claude sont remplacés par des doublures, et `tests/__init__.py` empêche tout appel réel à Claude Code ou à Ollama même si un test oubliait un double. Des tests qui passent montrent la logique avec des doublures ; ils ne mesurent pas le comportement des modèles réels.
+Ou `tests.bat`, qui écrit le résultat dans `logs\tests.txt`. La suite compte environ 525 fonctions de test (`def test_`) réparties dans 20 modules. Elle n'a besoin ni de réseau ni de modèle réel : Ollama, Gemini et Claude sont remplacés par des doublures, et `tests/__init__.py` empêche tout appel réel à Claude Code ou à Ollama même si un test oubliait un double. Des tests qui passent montrent la logique avec des doublures ; ils ne mesurent pas le comportement des modèles réels.
 
 ## Limites connues
 
 - Seul Windows est validé.
 - Les agents interchangeables et le mode langage libre sont validés par tests unitaires avec doublures. Le seul run avec des modèles réels est celui de la V2 documenté dans [docs/auto_projet.md](docs/auto_projet.md) ; il est anecdotique, ce n'est pas un benchmark. Les défauts V3 (Claude Haiku partout, `qwen3.5:9b-q4_K_M`) n'ont pas encore tourné en réel : qualité des réponses de Haiku sur les schémas JSON, durée par appel de `claude -p` et consommation du quota sont à mesurer.
+- Le mode conversation n'a pas encore tourné avec des modèles réels : la qualité de compréhension (surtout par le Qwen local 9B quand l'accord est refusé) et la pertinence des consignes construites à partir de l'historique sont à observer.
 - Les seuils ne sont pas calibrés.
 - Le détecteur de données personnelles est resserré mais heuristique (voir plus haut) : faux positifs possibles (un nom de marque en « Mot MAJUSCULES » fait basculer en local), faux négatifs possibles (nom en minuscules non déclaré).
 - Chaque envoi externe déclenche d'abord, en local, le repérage des indices indirects par Qwen (masquage) ; sans Ollama, ce repérage est sauté avec un avertissement.
@@ -291,6 +318,7 @@ La V1 était volontairement limitée. État des versions suivantes :
   - [x] Détecteur de données personnelles resserré.
   - [x] Clé Gemini et Ollama facultatifs au démarrage.
   - [ ] Run réel de la V3 et mesure (durée, quota Claude, validité JSON).
+  - [x] Mode conversation : parler à l'assistant sans aucune commande (3.1.0). Tests unitaires et doublures uniquement.
 
 ## Note légale sur les profils
 

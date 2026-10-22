@@ -73,7 +73,9 @@ class WiringFixture(unittest.TestCase):
         self.limiter = RateLimiter(GeminiQuota(), self.tmp / "gemini_quota.json", wall_clock=self.clock.time,
                                    sleep=self.clock.sleep)
         self.transport = FakeTransport([])
-        self.settings = replace(Settings(), state_dir=self.tmp, logs_dir=self.tmp / "logs")
+        # Ces tests couvrent le langage libre à commandes proposées (MODE_CONVERSATION=0) ; le mode
+        # conversation, actif par défaut, a ses propres tests (tests/test_conversation.py).
+        self.settings = replace(Settings(), state_dir=self.tmp, logs_dir=self.tmp / "logs", mode_conversation=False)
         self.client = GeminiClient(KEY, self.settings.gemini_model, self.limiter, transport=self.transport)
         self.claude = FakeClaude()
         self.llm = FakeLLM([])
