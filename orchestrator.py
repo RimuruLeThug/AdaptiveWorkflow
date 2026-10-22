@@ -192,7 +192,7 @@ class Orchestrator:
         self.logs_dir = logs_dir
         self.log_content = log_content
         self.request_counter = request_counter
-        self.repairer = repairer  # Qwen 2.5 3B : répare un JSON invalide, puis le code revérifie
+        self.repairer = repairer  # rôle « reparation » : répare un JSON invalide, puis le code revérifie
 
     @property
     def worker_specs(self) -> List[WorkerSpec]:

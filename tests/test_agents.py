@@ -10,12 +10,12 @@ from pathlib import Path
 from unittest import mock
 
 import config
-from agents import (ROLES, Agent, AgentDailyQuota, AgentEmptyResponse, AgentRateLimited, AgentRegistry,
+from agents import (ROLES, TEXTE_LIBRE_ROLES, Agent, AgentDailyQuota, AgentEmptyResponse, AgentRateLimited, AgentRegistry,
                     AgentRouter,
                     AgentSchemaError, AgentSpec, AgentTimeout, AgentUnavailable, ClaudeAgent,
                     ExternalSendBlocked, GeminiAgent, LocalAgent, LocalOpenAIBackend, NoAgentSucceeded,
                     RawReply, RoleCallError, RoleClient, RoleDailyQuotaError, RoleLLM, RoleRoute,
-                    build_registry, build_router,
+                    build_registry, build_router, builtin_specs,
                     parse_declarations, resolve_routes, validate_profile_agents)
 from claude_cli import ClaudeCodeClient
 from config import GeminiQuota, Settings
@@ -64,8 +64,8 @@ class FakeAgent(Agent):
 
 def fake_registry(**answers):
     """Registre où chaque agent intégré est remplacé par un double (même nom, même fournisseur)."""
-    providers = {"qwen_interface": "ollama", "qwen_format": "ollama", "gemini": "gemini",
-                 "gemini_test": "gemini", "claude": "claude"}
+    providers = {"claude_haiku": "claude", "qwen": "ollama", "qwen_interface": "ollama", "qwen_format": "ollama",
+                 "gemini": "gemini", "gemini_test": "gemini", "claude": "claude"}
     reg = AgentRegistry()
     fakes = {}
     for name, provider in providers.items():
@@ -74,8 +74,28 @@ def fake_registry(**answers):
     return reg, fakes
 
 
-def settings(**kw):
+# Affectation de la V2 (Gemini pour les rôles de génération, Qwen local pour les autres), posée
+# par configuration : les tests de mécanique (routage, replis, confidentialité) restent écrits
+# sur ce schéma ; les défauts V3 (claude_haiku partout, repli qwen) ont leurs propres tests.
+V2_ROLES = (("organisateur", "gemini"), ("worker", "gemini"), ("relecteur", "gemini"), ("grand_modele", "gemini"),
+            ("interface", "qwen_interface"), ("cadrage", "qwen_interface"), ("routage", "qwen_interface"),
+            ("promesse", "qwen_interface"), ("format", "qwen_format"), ("dedup", "qwen_format"),
+            ("reparation", "qwen_format"), ("reformulation", "gemini"))
+
+
+def settings(v3=False, **kw):
+    """Settings de test. Par défaut, affectation V2 par configuration (sauf v3=True) ; les rôles
+    donnés dans agent_roles remplacent ceux de la V2."""
+    if not v3:
+        given = dict(kw.get("agent_roles", ()))
+        kw["agent_roles"] = tuple((r, a) for r, a in V2_ROLES if r not in given) + tuple(given.items())
     return replace(Settings(), **kw)
+
+
+def with_roles(base, roles):
+    """Comme replace(base, agent_roles=roles), avec l'affectation V2 pour les autres rôles."""
+    given = dict(roles)
+    return replace(base, agent_roles=tuple((r, a) for r, a in V2_ROLES if r not in given) + tuple(given.items()))
 
 
 def router_for(reg, s=None, profile=None, **kw):
@@ -219,6 +239,88 @@ class ContractTest(GeminiFixture):
         self.assertTrue(r.data["identique"])
 
 
+class ClaudeAvailabilityTest(unittest.TestCase):
+    """V3 : claude_haiku est l'agent par défaut ; absent ou non connecté, il est sauté sans processus
+    lancé ni aperçu demandé, et le rôle passe à son repli local."""
+
+    def test_commande_absente_indisponible_sans_processus(self):
+        runs = []
+        client = ClaudeCodeClient(model="haiku", which=lambda name: None, runner=lambda *a, **k: runs.append(a))
+        agent = ClaudeAgent(AgentSpec("claude_haiku", "claude", "haiku"), client)
+        self.assertIn("pas installé", agent.unavailable_reason())
+        self.assertEqual(runs, [])
+
+    def test_marque_indisponible_pour_la_session(self):
+        client = ClaudeCodeClient(model="haiku", executable="claude", runner=lambda *a, **k: None)
+        agent = ClaudeAgent(AgentSpec("claude_haiku", "claude", "haiku"), client)
+        self.assertEqual(agent.unavailable_reason(), "")
+        agent.mark_unavailable("Claude Code n'est pas connecté")
+        with self.assertRaises(AgentUnavailable):
+            agent.call("p")
+
+    def test_echec_non_connecte_retenu_pour_la_session(self):
+        calls = []
+
+        def runner(cmd, **kw):
+            calls.append(cmd[1:3])
+            return subprocess.CompletedProcess(cmd, 1, json.dumps({"authMethod": "none"}), "")
+
+        client = ClaudeCodeClient(model="haiku", executable="claude", runner=runner)
+        agent = ClaudeAgent(AgentSpec("claude_haiku", "claude", "haiku"), client)
+        with self.assertRaises(AgentUnavailable):
+            agent.call("p")
+        n = len(calls)
+        self.assertIn("pas connecté", agent.unavailable_reason())
+        with self.assertRaises(AgentUnavailable):
+            agent.call("p")
+        self.assertEqual(len(calls), n)  # pas de nouveau processus
+
+    def test_repli_local_sans_confirmation_si_claude_absent(self):
+        reg = build_registry(settings(v3=True), claude_client_factory=lambda m: ClaudeCodeClient(
+            model=m, which=lambda name: None))
+        reg.register(FakeAgent("qwen", answers=[ROUTE_OK]))
+        router = router_for(reg, settings(v3=True), confirm=lambda p: self_fail())
+        self.assertEqual(route(router.role_llm("routage"), "salut").command.name, "tache")
+        self.assertEqual([(e["agent"], e["result"]) for e in router.journal],
+                         [("claude_haiku", "indisponible"), ("qwen", "ok")])
+
+
+def self_fail():
+    raise AssertionError("aucune confirmation attendue : rien ne peut partir")
+
+
+class SessionConsentAllTest(unittest.TestCase):
+    def test_accord_groupe_pour_un_fournisseur(self):
+        reg, fakes = fake_registry(claude_haiku=["a", "b"])
+        router = router_for(reg, settings(v3=True), confirm=lambda p: self_fail())
+        roles = router.grant_session_consent_all("claude")
+        self.assertEqual(roles, list(TEXTE_LIBRE_ROLES))
+        self.assertEqual(router.call("routage", "salut").agent, "claude_haiku")  # sans confirmation par envoi
+        self.assertEqual(router.call("cadrage", "projet").agent, "claude_haiku")
+        self.assertFalse(router.has_session_consent("routage", "gemini"))  # un seul fournisseur
+        router.revoke_session_consent()
+        router.confirm = None  # plus d'accord : confirmation par envoi, absente ici = refus
+        with self.assertRaises(PreviewRefused):
+            router.call("routage", "salut")
+
+    def test_jamais_pour_les_roles_de_generation(self):
+        reg, fakes = fake_registry(claude_haiku=["plan"])
+        router = router_for(reg, settings(v3=True))
+        router.grant_session_consent_all("claude")
+        for role in ("organisateur", "worker", "relecteur", "grand_modele"):
+            self.assertFalse(router.has_session_consent(role, "claude"), role)
+            with self.assertRaises(ValueError):
+                router.grant_session_consent(role, "claude")
+        self.assertEqual(router.call("worker", "p").agent, "claude_haiku")  # pas de texte libre : masqué seulement
+
+    def test_refuse_en_profil_donnees_personnelles(self):
+        reg, _ = fake_registry()
+        router = router_for(reg, settings(v3=True), personal_data=True)
+        with self.assertRaises(PolicyError):
+            router.grant_session_consent_all("claude")
+        self.assertEqual(router._session_consent, set())
+
+
 class LocalOpenAIBackendTest(unittest.TestCase):
     """Backend local alternatif : jamais lancé, transport simulé."""
 
@@ -271,16 +373,43 @@ class LocalOpenAIBackendTest(unittest.TestCase):
 
 
 class ConfigurationTest(GeminiFixture):
-    def test_defauts_du_projet_inchanges(self):
-        routes = resolve_routes(settings())
-        for role in ("interface", "cadrage", "routage", "promesse"):
-            self.assertEqual(routes[role].agents(), ["qwen_interface"], role)
-        for role in ("format", "dedup", "reparation"):
-            self.assertEqual(routes[role].agents(), ["qwen_format"], role)
-        for role in ("organisateur", "worker", "relecteur", "grand_modele"):
-            self.assertEqual(routes[role].agents(), ["gemini"], role)
-        self.assertEqual(resolve_routes(settings(big_model_provider="claude"))["grand_modele"].agent, "claude")
+    def test_defauts_v3_claude_haiku_puis_qwen_local(self):
+        routes = resolve_routes(settings(v3=True))
+        for role in ROLES:
+            self.assertEqual(routes[role].agents(), ["claude_haiku", "qwen"], role)
+            self.assertEqual(routes[role].source, "défaut", role)
+        for provider in ("claude", "gemini"):
+            r = resolve_routes(settings(v3=True, big_model_provider=provider))["grand_modele"]
+            self.assertEqual(r.agents(), [provider, "qwen"])
+        self.assertEqual(Settings().big_model_provider, "")
         self.assertEqual(set(ROLES), set(config.AGENT_ROLES))
+
+    def test_agents_integres_v3(self):
+        s = settings(v3=True)
+        specs = {sp.name: sp for sp in builtin_specs(s)}
+        self.assertEqual((specs["claude_haiku"].provider, specs["claude_haiku"].model), ("claude", "haiku"))
+        self.assertTrue(specs["claude_haiku"].external)
+        # Un seul modèle Qwen : les alias de la V2 ont exactement le même modèle et les mêmes options.
+        for alias in ("qwen_interface", "qwen_format"):
+            self.assertEqual((specs[alias].model, specs[alias].options), (specs["qwen"].model, specs["qwen"].options))
+        self.assertEqual(specs["qwen"].model, "qwen3.5:9b-q4_K_M")
+        self.assertEqual((specs["qwen"].option("num_ctx"), specs["qwen"].option("think")), (16384, False))
+        with mock.patch.dict(os.environ, {"QWEN_NUM_CTX": "4096"}):
+            self.assertEqual(builtin_specs(config.load_settings())[1].option("num_ctx"), 4096)
+        self.assertFalse(specs["qwen"].external)
+        with mock.patch.dict(os.environ, {"QWEN_MODEL": "autre:tag", "CLAUDE_HAIKU_MODEL": "claude-haiku-x"}):
+            s2 = config.load_settings()
+        self.assertEqual((s2.qwen_model, s2.claude_haiku_model), ("autre:tag", "claude-haiku-x"))
+        with mock.patch.dict(os.environ, {"QWEN_INTERFACE_MODEL": "ancien"}):
+            self.assertEqual(config.legacy_qwen_variables(), ("QWEN_INTERFACE_MODEL",))
+            self.assertEqual(config.load_settings().qwen_model, "qwen3.5:9b-q4_K_M")  # ignorée
+
+    def test_role_toujours_reaffectable(self):
+        s = settings(v3=True, agent_roles=(("worker", "gemini"), ("dedup", "qwen")))
+        routes = resolve_routes(s)
+        self.assertEqual(routes["worker"].agents(), ["gemini"])
+        self.assertEqual(routes["dedup"].agents(), ["qwen"])
+        self.assertEqual(routes["organisateur"].agents(), ["claude_haiku", "qwen"])
 
     def test_gemini_test_vide_par_defaut_et_indisponible(self):
         self.assertEqual(Settings().gemini_test_model, "")
@@ -306,7 +435,7 @@ class ConfigurationTest(GeminiFixture):
         routes = resolve_routes(s)
         self.assertEqual(routes["routage"].agents(), ["gemini_test", "qwen_interface"])
         self.assertEqual(routes["routage"].source, "configuration")
-        self.assertEqual((routes["worker"].agent, routes["worker"].difficile), ("gemini", "claude"))
+        self.assertEqual((routes["worker"].agent, routes["worker"].difficile), ("claude_haiku", "claude"))
         self.assertEqual(routes["worker"].seuil_caracteres, 100)
 
     def test_remplacement_d_un_role_par_configuration_seule(self):
@@ -493,7 +622,7 @@ class GeminiTestInQwenRolesTest(GeminiFixture):
     """Chaque rôle Qwen accepte gemini_test avec la même forme de sortie."""
 
     def router(self, role, **kw):
-        s = replace(self.settings, agent_roles=((role, "gemini_test"),))
+        s = with_roles(self.settings, ((role, "gemini_test"),))
         reg = self.registry(s)
         self.qwen_format = FakeLLM([])
         reg.register(LocalAgent(AgentSpec("qwen_format", "ollama", "qwen-format-factice"), self.qwen_format))
@@ -508,7 +637,7 @@ class GeminiTestInQwenRolesTest(GeminiFixture):
                                            '"hors_perimetre": []}'),
                  ("promesse", PROMISE_SCHEMA, promise), ("format", GROUPS_SCHEMA, groups),
                  ("dedup", GROUPS_SCHEMA, groups), ("reparation", PROMISE_SCHEMA, promise)]
-        self.assertEqual({c[0] for c in cases}, {r for r, i in ROLES.items() if i.default_agent.startswith("qwen")})
+        self.assertEqual({c[0] for c in cases}, set(TEXTE_LIBRE_ROLES) - {"reformulation"})
         for role, schema, answer in cases:
             with self.subTest(role=role):
                 qwen = FakeLLM([answer])
@@ -524,13 +653,13 @@ class GeminiTestInQwenRolesTest(GeminiFixture):
 
     def _local(self, role, qwen):
         reg = AgentRegistry()
-        default = ROLES[role].default_agent
+        default = dict(V2_ROLES)[role]
         reg.register(LocalAgent(AgentSpec(default, "ollama", "qwen-factice"), qwen))
         reg.register(LocalAgent(AgentSpec("qwen_format" if default != "qwen_format" else "qwen_interface",
                                           "ollama", "qwen-factice"), FakeLLM([])))
         for name in ("gemini", "gemini_test", "claude"):
             reg.register(FakeAgent(name, "claude" if name == "claude" else "gemini"))
-        return reg, settings()
+        return reg, settings(agent_roles=((role, default),))
 
     def test_routage(self):
         self.answer(ROUTE_OK)
@@ -599,23 +728,40 @@ class LeakyMasker(Masker):
 
 
 class PrivacyTest(GeminiFixture):
-    def test_a_profil_personnel_refuse_gemini_test(self):
-        self.answer(ROUTE_OK)
-        s = replace(self.settings, agent_roles=(("routage", "gemini_test"),))
-        router = router_for(self.registry(s), s, personal_data=True, confirm=lambda p: True)
-        with self.assertRaises(PolicyError):
-            route(router.role_llm("routage"), "salut")
-        self.assertEqual(self.transport.requests, [])
+    def test_a_profil_personnel_ecarte_gemini_test_repli_local(self):
+        s = with_roles(self.settings, (("routage", "gemini_test"),))
+        reg = self.registry(s)
+        qwen = FakeAgent("qwen", answers=[ROUTE_OK])
+        reg.register(qwen)
+        router = router_for(reg, s, personal_data=True, confirm=lambda p: self.fail("aucun envoi externe"))
+        self.assertEqual(route(router.role_llm("routage"), "salut").command.name, "tache")
+        self.assertEqual(self.transport.requests, [])  # rien n'est parti
         self.assertEqual(router.journal[0]["result"], "refuse_politique")
+        self.assertEqual((router.journal[-1]["agent"], router.journal[-1]["result"]), ("qwen", "ok"))
+        self.assertIn("données personnelles", router.journal[-1]["reason"])
 
-    def test_a_profil_personnel_refuse_tout_externe_meme_en_repli(self):
-        reg, fakes = fake_registry(qwen_interface=["ok"], claude=["ok"])
-        for agents in ("qwen_interface,claude", "qwen_interface,gemini"):
+    def test_a_profil_personnel_ecarte_tout_externe_meme_en_repli(self):
+        for agents in ("claude,qwen_interface", "gemini,qwen_interface", "qwen_interface,claude"):
             with self.subTest(agents=agents):
+                reg, fakes = fake_registry(qwen_interface=["ok"], claude=["non"], gemini=["non"])
                 router = router_for(reg, settings(agent_roles=(("interface", agents),)), personal_data=True)
-                with self.assertRaises(PolicyError):
-                    router.call("interface", "p")
-        self.assertEqual(fakes["qwen_interface"].prompts, [])  # refus avant tout appel
+                self.assertEqual(router.call("interface", "p").agent, "qwen_interface")
+                self.assertEqual(fakes["claude"].prompts, [])  # jamais appelé, même en repli
+                self.assertEqual(fakes["gemini"].prompts, [])
+
+    def test_a_profil_personnel_defauts_v3_tout_en_local(self):
+        reg, fakes = fake_registry(qwen=["ok"] * len(ROLES), claude_haiku=["non"])
+        router = router_for(reg, settings(v3=True), personal_data=True)
+        for role in ROLES:
+            with self.subTest(role=role):
+                self.assertEqual(router.call(role, "p").agent, "qwen")
+        self.assertEqual(fakes["claude_haiku"].prompts, [])
+
+    def test_a_profil_personnel_sans_agent_local_echoue_ferme(self):
+        reg, fakes = fake_registry(qwen=[AgentUnavailable("Ollama éteint")])
+        router = router_for(reg, settings(v3=True, agent_roles=(("worker", "claude"),)), personal_data=True)
+        with self.assertRaises(NoAgentSucceeded):
+            router.call("worker", "p")
         self.assertEqual(fakes["claude"].prompts, [])
 
     def test_a_profil_personnel_local_autorise(self):
@@ -625,10 +771,11 @@ class PrivacyTest(GeminiFixture):
 
     def test_a_profil_personnel_livre_avec_configuration_externe(self):
         office = load_profile("bureautique_fictive")
-        s = replace(self.settings, agent_roles=(("cadrage", "gemini_test"),))
-        router = build_router(s, profile=office, registry=self.registry(s), confirm=lambda p: True)
-        with self.assertRaises(PolicyError):
-            router.call("cadrage", "description")
+        s = with_roles(self.settings, (("cadrage", "gemini_test"),))
+        reg = self.registry(s)
+        reg.register(FakeAgent("qwen", answers=["fiche locale"]))
+        router = build_router(s, profile=office, registry=reg, confirm=lambda p: True)
+        self.assertEqual(router.call("cadrage", "description").agent, "qwen")
         self.assertEqual(self.transport.requests, [])
 
     def test_a_profil_personnel_ne_peut_pas_declarer_d_externe(self):
@@ -651,7 +798,7 @@ class PrivacyTest(GeminiFixture):
 
     def test_b_masquage_avant_envoi_et_reinjection_locale(self):
         self.answer(json.dumps({"identique": False, "explication": "écrire à [EMAIL_1]"}))
-        s = replace(self.settings, agent_roles=(("promesse", "gemini_test"),))
+        s = with_roles(self.settings, (("promesse", "gemini_test"),))
         router = router_for(self.registry(s), s, masker=Masker(Vault()), confirm=lambda p: True)
         r = router.call("promesse", "Contact : jean.martin@exemple.fr", schema=PROMISE_SCHEMA)
         sent = self.sent_texts()[0]
@@ -660,7 +807,7 @@ class PrivacyTest(GeminiFixture):
         self.assertEqual(r.data["explication"], "écrire à jean.martin@exemple.fr")  # réinjecté en local
 
     def test_b_fuite_detectee_envoi_bloque(self):
-        s = replace(self.settings, agent_roles=(("promesse", "gemini_test"),))
+        s = with_roles(self.settings, (("promesse", "gemini_test"),))
         router = router_for(self.registry(s), s, masker=LeakyMasker(Vault()))
         with self.assertRaises(LeakBlocked):
             router.call("promesse", "texte")
@@ -668,7 +815,7 @@ class PrivacyTest(GeminiFixture):
         self.assertEqual(router.journal[-1]["result"], "fuite_bloquee")
 
     def test_b_sans_masqueur_controle_de_fuite_quand_meme(self):
-        s = replace(self.settings, agent_roles=(("promesse", "gemini_test"),))
+        s = with_roles(self.settings, (("promesse", "gemini_test"),))
         router = router_for(self.registry(s), s)
         with self.assertRaises(ExternalSendBlocked):  # via RoleLLM : erreur locale, échec fermé
             router.role_llm("promesse").ask("écrire à jean.martin@exemple.fr")
@@ -681,7 +828,7 @@ class PrivacyTest(GeminiFixture):
         self.assertEqual(fakes["qwen_interface"].prompts, ["jean.martin@exemple.fr"])
 
     def test_c_texte_libre_confirmation_obligatoire(self):
-        s = replace(self.settings, agent_roles=(("routage", "gemini_test"),))
+        s = with_roles(self.settings, (("routage", "gemini_test"),))
         for confirm in (None, lambda preview: False):
             with self.subTest(confirm=confirm):
                 router = router_for(self.registry(s), s, confirm=confirm)
@@ -694,7 +841,7 @@ class PrivacyTest(GeminiFixture):
     def test_c_confirmation_avec_apercu_masque(self):
         self.answer(ROUTE_OK)
         previews = []
-        s = replace(self.settings, agent_roles=(("routage", "gemini_test"),))
+        s = with_roles(self.settings, (("routage", "gemini_test"),))
         router = router_for(self.registry(s), s, masker=Masker(Vault()),
                             confirm=lambda p: previews.append(p) or True)
         route(router.role_llm("routage"), "relancer jean.martin@exemple.fr")
@@ -704,7 +851,7 @@ class PrivacyTest(GeminiFixture):
 
     def test_c_pas_de_confirmation_hors_role_qwen_ni_en_local(self):
         self.answer("texte")
-        s = replace(self.settings, agent_roles=(("worker", "gemini_test"),))
+        s = with_roles(self.settings, (("worker", "gemini_test"),))
         router_for(self.registry(s), s, confirm=lambda p: self.fail("aucune confirmation attendue")).call(
             "worker", "p")
         reg, _ = fake_registry(qwen_interface=[ROUTE_OK])
@@ -720,7 +867,7 @@ class FreeTextDerivedTest(GeminiFixture):
     """Tout envoi externe dont le contenu peut dériver du texte libre exige la confirmation."""
 
     def router(self, *roles, qwen_answers=(), **kw):
-        s = replace(self.settings, agent_roles=tuple(roles))
+        s = with_roles(self.settings, tuple(roles))
         reg = self.registry(s)
         self.qwen = FakeLLM(list(qwen_answers))
         reg.register(LocalAgent(AgentSpec("qwen_interface", "ollama", "qwen-factice"), self.qwen))
@@ -758,7 +905,7 @@ class FreeTextDerivedTest(GeminiFixture):
         self.assertNotIn("jean.martin@exemple.fr", self.sent_texts()[0])
 
     def test_tout_role_qwen_exige_confirmation(self):
-        qwen_roles = [r for r, i in ROLES.items() if i.default_agent.startswith("qwen")]
+        qwen_roles = [r for r in TEXTE_LIBRE_ROLES if r != "reformulation"]
         self.assertEqual(set(qwen_roles), {"interface", "cadrage", "routage", "promesse", "format", "dedup",
                                            "reparation"})
         for role in qwen_roles:
@@ -800,9 +947,12 @@ class FreeTextDerivedTest(GeminiFixture):
     def test_profil_personnel_reparation_externe_refusee(self):
         router = self.router(("reparation", "gemini_test"), qwen_answers=[QWEN_INVALIDE],
                              personal_data=True, confirm=lambda p: True)
-        with self.assertRaises(PolicyError):
-            route(router.role_llm("routage"), "salut")
+        fidele = json.dumps({"action": "tache", "argument": "relancer jean.martin@exemple.fr pour le devis",
+                             "reponse": ""})
+        router.registry.register(LocalAgent(AgentSpec("qwen", "ollama", "qwen-factice"), FakeLLM([fidele])))
+        self.assertEqual(route(router.role_llm("routage"), "salut").command.name, "tache")  # réparée en local
         self.assertEqual(self.transport.requests, [])
+        self.assertIn(("reparation", "qwen", "ok"), [(e["role"], e["agent"], e["result"]) for e in router.journal])
 
 
 # ------------------------------------------------ quota journalier Gemini

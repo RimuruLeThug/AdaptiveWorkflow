@@ -1,7 +1,8 @@
 """Pilote : rejoue un scénario complet sans saisie et mesure.
 
-    python pilot.py                      # scénario par défaut (données fictives)
-    python pilot.py mon_scenario.txt     # une commande par ligne, # = commentaire
+    python pilot.py                      # scénario par défaut : conversation, sans commande
+    python pilot.py --commandes          # même parcours avec les commandes « /… »
+    python pilot.py mon_scenario.txt     # un message ou une commande par ligne, # = commentaire
 
 Toutes les confirmations (o/n) reçoivent « o ». Dans une commande, {premier}
 est remplacé par le numéro de la première idée de la shortlist de la dernière revue. La fiche et les décisions du
@@ -26,7 +27,18 @@ from local_llm import release_project_vram
 from qwen_ui.bootstrap import StartupError, build_app, safe_console
 
 DEFAULT_SCENARIO = """\
-# Scénario fictif : brainstorm complet
+# Scénario fictif : brainstorm complet, en conversation (aucune commande)
+bonjour, que sais-tu faire ?
+J'ai un projet : une application Android gratuite qui fonctionne hors ligne, pour réduire le gaspillage alimentaire à la maison en suggérant des recettes avec les restes. Je la développe seul en 3 mois. Pas de livraison, pas de paiement, pas de version web.
+Vas-y, propose-moi 12 idées de fonctionnalités, dont au moins 2 à contre-courant et 3 faisables en une semaine.
+regroupe les doublons
+fais-les noter
+je garde la {premier}, elle me plaît bien
+il me reste combien de quota ?
+"""
+
+COMMAND_SCENARIO = """\
+# Scénario fictif : brainstorm complet, avec les commandes
 bonjour, que sais-tu faire ?
 /fiche Objectif : trouver des idées d'application mobile pour réduire le gaspillage alimentaire à la maison. Contraintes : gratuite ; fonctionne hors ligne ; développable seul en 3 mois. Périmètre : application Android ; suggestions de recettes avec les restes. Hors périmètre : livraison ; paiement ; version web.
 /tache Utilise le generateur pour proposer 12 idées de fonctionnalités, dont au moins 2 contrariennes et 3 réalisables en une semaine.
@@ -53,7 +65,9 @@ def _run() -> int:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     txt_path = s.logs_dir / f"pilot-{stamp}.txt"
     json_path = s.logs_dir / f"pilot-{stamp}.json"
-    scenario = Path(sys.argv[1]).read_text(encoding="utf-8") if len(sys.argv) > 1 else DEFAULT_SCENARIO
+    arg = sys.argv[1] if len(sys.argv) > 1 else ""
+    scenario = (DEFAULT_SCENARIO if not arg else COMMAND_SCENARIO if arg == "--commandes"
+                else Path(arg).read_text(encoding="utf-8"))
     commands = [l.strip() for l in scenario.splitlines() if l.strip() and not l.strip().startswith("#")]
 
     out = open(txt_path, "w", encoding="utf-8")

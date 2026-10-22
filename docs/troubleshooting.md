@@ -6,7 +6,7 @@ Messages in quotes are the French texts the program prints. They are quoted as t
 
 ### "GEMINI_API_KEY est absente"
 
-The key is missing or empty.
+Since V3 the key is optional. This message appears only when a Gemini agent or a direct Gemini client is actually used (`AGENT_<ROLE>=gemini`, `/organisateur gemini`, `/grand gemini`) and the key is missing or empty.
 
 - The file must be named exactly `.env` (not `.env.txt`: Windows hides known extensions, so check with `dir /a` or in the file properties).
 - It must be at the project root, next to `config.py`.
@@ -14,27 +14,21 @@ The key is missing or empty.
 
 The message says which file it found under another name, if any, and how to rename it.
 
-### "Interface Qwen indisponible : Ollama ne répond pas"
+### "Attention : Claude indisponible (...)"
 
-Ollama is not running, or is not at the address the project uses.
+A startup warning: the program still starts. Claude Code (default agent of every role in V3) is not installed, not logged in, or logged in with an API key. Every role then goes straight to its fallback, the local Qwen, without asking you to confirm sends that could not leave anyway. Fix it with the messages of the [Claude](#claude) section, then restart.
 
-- Start the Ollama application, then check with `ollama list`.
-- If Ollama listens elsewhere, set `OLLAMA_HOST_URL` in `.env` (default `http://localhost:11434`).
+### "Attention : Qwen local indisponible (...)"
 
-### "Interface Qwen indisponible : Modèle « ... » absent d'Ollama"
+A startup warning: the program still starts. Ollama is not running, or the local model (default `qwen3.5:9b-q4_K_M`) is not installed under that name.
 
-The interface model (default `qwen3.5:4b-q8_0`) is not installed under that name.
+- Start the Ollama application, then check with `ollama list`. If Ollama listens elsewhere, set `OLLAMA_HOST_URL` in `.env` (default `http://localhost:11434`).
+- Install the model: `ollama pull qwen3.5:9b-q4_K_M`. Or, if the message lists an installed variant ("Variante déjà installée : ..."), set `QWEN_MODEL=<that name>` in `.env`. Names must match `ollama list` exactly.
+- Without the local model there is no fallback when Claude fails, a personal-data session cannot do anything, and the masking skips its indirect-clue step (with a warning).
 
-- Install it: `ollama pull qwen3.5:4b-q8_0`.
-- Or, if the message lists an installed variant ("Variante déjà installée : ..."), set `QWEN_INTERFACE_MODEL=<that name>` in `.env`.
-- Names must match `ollama list` exactly.
+### "Attention : QWEN_INTERFACE_MODEL ... ignorée(s) depuis la V3"
 
-### "Attention : Qwen 2.5 3B indisponible, réparation JSON et déduplication limitées."
-
-This is a warning: the program still starts. The format model (default `qwen2.5:3b-instruct-q4_K_M`) is missing or unreachable.
-
-- Install it: `ollama pull qwen2.5:3b-instruct-q4_K_M`, or set `QWEN_FORMAT_MODEL`.
-- Without it, `/dedup` only groups exact duplicates and invalid JSON is repaired only by deterministic rules, not by a model.
+Your `.env` still has V2 variables. V3 uses a single local model: replace them with `QWEN_MODEL` (and `QWEN_NUM_CTX` if you changed the context sizes).
 
 ### "Profil de démarrage invalide" or "Configuration des agents invalide"
 
@@ -47,9 +41,9 @@ This is a warning: the program still starts. The format model (default `qwen2.5:
 
 A call to Ollama failed (Ollama stopped, model unloaded because of a restart, HTTP error). Check `ollama ps` and restart Ollama if needed; then repeat the command.
 
-### "Qwen a renvoyé une réponse mal formée (...)"
+### "Le modèle a renvoyé une réponse mal formée (...)"
 
-Qwen did not return the expected JSON, even after the repair step. Retry the request, or use an explicit command (for example `/tache <consigne>` instead of free text). Repeated failures on the same request usually mean the request is too vague: rephrase it.
+The agent of the role (Claude Haiku or Qwen by default) did not return the expected JSON, even after the repair step. Retry the request, or use an explicit command (for example `/tache <consigne>` instead of free text). Repeated failures on the same request usually mean the request is too vague: rephrase it.
 
 ### "Commande proposée : ..." then nothing happens
 
@@ -111,20 +105,24 @@ The leak check found a personal-data value in the text that was about to be sent
 
 ### "Reformulation externe indisponible (...) : reformulation locale par Qwen."
 
-Gemini failed (quota, empty answer, timeout). The local model takes over. Nothing else changes.
+The external agent failed (Claude Code missing, subscription limit, quota, empty answer, timeout). The local model takes over. Nothing else changes.
 
-### "Pas d'accord de session : vos messages sont reformulés localement par Qwen, rien n'est envoyé."
+### "Pas d'accord de session : vos messages sont reformulés localement par Qwen ; tout envoi externe ..."
 
-Expected when you refused the consent, or revoked it. `/accord oui` grants it again (not in a personal-data session).
+Expected when you refused the consent, or revoked it. Rephrasing stays local, and every external send of another free-text role (routing, framing, summaries...) asks "Envoyer ce texte à un agent externe ? (o/n)" with a masked preview. `/accord oui` grants the consent again (not in a personal-data session).
+
+### Too many "Envoyer ce texte à un agent externe ? (o/n)" questions
+
+These come from free-text roles sent to an external agent without session consent. Answer `o` to the session question at your first message, or type `/accord oui`; or keep those roles local (`AGENT_ROUTAGE=qwen`, `AGENT_CADRAGE=qwen`...).
 
 ## Claude
 
-Claude mode needs Claude Code installed and logged in with a claude.ai account.
+Since V3 Claude Haiku is the default agent of every role. It needs Claude Code installed and logged in with a claude.ai account. If Claude is unavailable, roles fall back to the local Qwen.
 
 - "Claude Code n'est pas installé (commande « claude » introuvable)" : install Claude Code, then open a new terminal so the `claude` command is found.
 - "Claude Code n'est pas connecté. Lancez : claude auth login (compte Claude Pro)" : run `claude auth login`.
 - "Claude Code est connecté par « ... », ce qui facturerait l'API." : the login uses an API key, which bills the API. Log in with the claude.ai account. `CLAUDE_ALLOW_API_BILLING=1` allows it anyway; do that only if you accept API billing.
-- "Claude Code a renvoyé une erreur : ... limite d'usage de l'abonnement atteinte ?" : the subscription limit was reached. Wait, or use Gemini (`/organisateur gemini`, `/grand gemini`).
+- "Claude Code a renvoyé une erreur : ... limite d'usage de l'abonnement atteinte ?" : the subscription limit was reached. Wait, or reassign roles to Gemini or the local Qwen (`AGENT_<ROLE>=gemini,qwen`, `/organisateur gemini`, `/grand gemini`). Meanwhile, each role falls back to the local Qwen.
 - "Claude Code n'a pas répondu en 600 s" : the call timed out (`CLAUDE_TIMEOUT_S`). Retry, or raise the timeout.
 - "Claude Code a renvoyé une réponse vide" or "réponse illisible" : retry. If it repeats, check `claude auth status` and the Claude Code version.
 
@@ -134,7 +132,7 @@ Claude calls are always counted in `state/claude_calls.json`; `/quota` shows the
 
 ### "Donnée personnelle détectée (...) : passage automatique au profil restrictif"
 
-The code found an e-mail address, IBAN, French social-security number, phone number or birth date in your message or in a feedback reason. The session switches to the restrictive profile (default `bureautique_fictive`). External sends are blocked and the rephrasing consent is revoked.
+The code found personal data in your message or in a feedback reason: e-mail address, IBAN, French social-security number, phone number, birth date, SIRET or announced SIREN, postal address, postal code followed by a town, a value declared by the profile, or a person name (title + name, "Firstname LASTNAME"). The session switches to the restrictive profile (default `bureautique_fictive`). External agents are dropped (every role is handled by the local Qwen) and the session consent is revoked.
 
 Only an explicit `/profil <nom>` lifts this lock. Be aware:
 
@@ -145,7 +143,7 @@ If the detection is a false positive, see the next section, then rewrite the mes
 
 ### "profil restrictif « ... » indisponible ; tout envoi externe est bloqué pour la session"
 
-The personal-data profile named by `PROFIL_DONNEES_PERSO` cannot be loaded. The session stays local until `/profil` is used. Fix the profile folder or the variable.
+The personal-data profile named by `PROFIL_DONNEES_PERSO` cannot be loaded. The session stays local (local Qwen) until `/profil` is used. Fix the profile folder or the variable.
 
 ### False positives of the personal-data detector
 
@@ -158,8 +156,12 @@ The detector is deliberately broad, and some ordinary text matches it:
 | `IBAN` | two letters, two digits, then groups of four characters | some internal codes |
 | `EMAIL` | `name@host.tld` | an e-mail address pasted in a log |
 | `NAISSANCE` | a date right after "né le", "née le", "date de naissance", "naissance" | "née le 3 mars 1980" in a pasted text |
+| `PERSONNE` | a title then a capitalised word ("M. Dupont"), or a capitalised word followed by an upper-case word that is not a common acronym | a brand or product written "Nova CLOUD" |
+| `ADRESSE` | a number then a street type ("12 rue ...", "3 avenue ...") | "voir 2 place du marché" in a recipe idea |
+| `CODE_POSTAL` | five digits followed by a capitalised word | "75011 Paris" in a market description |
+| `SIRET` / `SIREN` | 14 digits; 9 digits only after "SIREN", "SIRET" or "RCS" | a 14-digit reference number |
 
-Names, addresses and postal codes are masked but do **not** trigger the restrictive profile, so they cannot cause a switch.
+Since V3 names, addresses and postal codes followed by a town **do** trigger the restrictive profile. Common acronyms (API, TV, CRM, PME, RGPD...) and a postal code alone ("budget 15000 euros") do not. A switch only means the session is handled locally; leave it with `/profil brainstorm` if it was a false positive.
 
 To check what will be sent, use `/masquer <texte>`: it shows the masked text and the leak check, and sends nothing. `python -m privacy apercu <fichier.txt>` does the same for a file, with the vault in memory only.
 
@@ -171,7 +173,7 @@ The masked text still contains a value from the vault or a detected identifier. 
 
 ### "Refusé par la politique de données : ..."
 
-A personal-data profile refuses any external provider. This is by design. Use local models for such a profile (or a non-personal profile with fictional data).
+A personal-data profile refuses any external provider when it is asked for explicitly (`/organisateur gemini|claude` then `/tache`, `/grand gemini|claude` then `/escalader`, or an external agent declared in a personal-data profile). With the default `agents` choice, roles are handled by the local Qwen instead. This is by design.
 
 ### "Coffre chiffré indisponible ... jetons en mémoire seulement"
 
@@ -186,13 +188,13 @@ The vault file cannot be decrypted, usually because it was copied from another W
 ### Slow answers, or the model runs on the CPU
 
 - Run `ollama ps`. In the PROCESSOR column, `100% GPU` is expected. A split between CPU and GPU means the models do not fit in VRAM alongside other applications.
-- Close applications that use the GPU, or reduce `QWEN_INTERFACE_NUM_CTX` and `QWEN_FORMAT_NUM_CTX` (the reference setup uses 8192 and 16384).
-- The tested setup is a 16 GB GPU. On a smaller GPU, choose smaller model variants (`QWEN_INTERFACE_MODEL`, `QWEN_FORMAT_MODEL`); this has not been tested.
+- Close applications that use the GPU, or reduce `QWEN_NUM_CTX` (default 16384).
+- The tested setup is a 16 GB GPU. The V3 default `qwen3.5:9b-q4_K_M` is about 6.6 GB; on a smaller GPU, choose a smaller variant with `QWEN_MODEL` (for example `qwen3.5:4b-q8_0`); this has not been tested.
 
 ### Models stay in VRAM after I stop using the project
 
 - The project unloads its own models when it exits normally, on Ctrl+C or after an error. It prints "VRAM libérée : ..." when it does.
-- To unload them at any time, run `liberer_vram.bat` or `python -m local_llm unload`. Only the project's two models are unloaded.
+- To unload them at any time, run `liberer_vram.bat` or `python -m local_llm unload`. Only the project's model (`QWEN_MODEL`) is unloaded.
 - `LOCAL_KEEP_ALIVE` (default `2m`) sets how long Ollama keeps a model after its last request. `0` unloads at once, at the cost of a reload for each call.
 
 ### `python -m local_llm` reports "ÉCHEC"

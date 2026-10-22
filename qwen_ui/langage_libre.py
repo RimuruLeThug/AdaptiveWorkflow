@@ -4,11 +4,12 @@ Trois mécanismes, sans logique métier (elle reste dans profiles/) :
 
 1. Reformulation (rôle « reformulation », agents.py) : le texte libre est transformé en
    demande claire et structurée (intention, objet, contraintes, points ambigus), puis
-   transmis au routage de Qwen. Agent Gemini par défaut, remplaçable par configuration
+   transmis au routage. Agent claude_haiku par défaut (V3), remplaçable par configuration
    (AGENT_REFORMULATION), par profil ou par Qwen local. Envoi externe seulement après un
-   ACCORD UNIQUE de session (ce rôle, ce fournisseur, rien d'autre), avec masquage et
-   contrôle de fuite avant chaque envoi. Refus, absence de réponse, profil « données
-   personnelles », échec de Gemini (429, quota, vide) : reformulation locale par Qwen.
+   ACCORD UNIQUE de session (un fournisseur ; il couvre aussi les autres rôles en texte
+   libre confiés à ce fournisseur), avec masquage et contrôle de fuite avant chaque envoi.
+   Refus, absence de réponse, profil « données personnelles », échec de l'agent (429,
+   quota, vide, Claude Code absent) : reformulation locale par Qwen.
 2. Profil implicite : Qwen propose un nom parmi les profils existants, le code vérifie ;
    les données personnelles sont détectées par le CODE (privacy/detectors.py) et
    imposent le profil restrictif, toujours prioritaire.
@@ -118,7 +119,7 @@ class Reformulator:
     sinon Qwen local. Ne lève pas d'erreur de modèle : au pire, None (texte d'origine)."""
 
     def __init__(self, router: AgentRouter, local_llm: LocalLLM, *, role: str = ROLE,
-                 local_agent: str = "qwen_interface") -> None:
+                 local_agent: str = "qwen") -> None:
         if role not in router.routes:
             raise ValueError(f"rôle inconnu : {role}")
         self.router = router
@@ -148,8 +149,9 @@ class Reformulator:
         return PROVIDER_LABELS.get(p or "", p or "local")
 
     def question(self) -> str:
-        return (f"Autoriser {self.label()} à reformuler vos messages (texte masqué, contrôle de fuite "
-                "avant chaque envoi) ?")
+        return (f"Autoriser {self.label()} pour cette session : reformulation de vos messages et autres rôles "
+                "en texte libre (routage, cadrage, résumés...) ; texte masqué, contrôle de fuite avant chaque "
+                "envoi. Sinon, reformulation locale et confirmation de chaque envoi ?")
 
     def has_consent(self) -> bool:
         """Accord de session effectif : seulement si l'agent PRINCIPAL est externe (lecture seule)."""
@@ -165,15 +167,16 @@ class Reformulator:
         p = self.external_provider()
         if not p or not self.primary_external():
             return False
-        self.router.grant_session_consent(self.role, p)
+        self.router.grant_session_consent_all(p)
         self.asked = True
         self.router.log_choice(self.role, self.router.routes[self.role].agent, "accord_session_donne",
                                "accord explicite de l'utilisateur")
         return True
 
     def revoke(self, reason: str = "révocation") -> bool:
+        """Révoque l'accord de session de TOUS les rôles (il a été donné pour tous à la fois)."""
         had = self.has_consent()
-        self.router.revoke_session_consent(self.role)
+        self.router.revoke_session_consent()
         if had:
             self.router.log_choice(self.role, self.router.routes[self.role].agent, "accord_session_revoque", reason)
         return had
@@ -188,10 +191,11 @@ class Reformulator:
                     f"{self.label()} : chaque envoi est alors confirmé (o/n) après aperçu du texte masqué. "
                     "Aucun accord de session nécessaire ni accordé.")
         if self.has_consent():
-            return (f"Accord de session donné : {self.label()} reformule vos messages (agent {agent}, texte "
-                    "masqué, contrôle de fuite avant chaque envoi). /accord non pour le révoquer.")
-        return (f"Pas d'accord de session : vos messages sont reformulés localement par Qwen, rien n'est "
-                f"envoyé. /accord oui pour autoriser {self.label()}.")
+            return (f"Accord de session donné : {self.label()} reformule vos messages (agent {agent}) et traite "
+                    "les autres rôles en texte libre qui lui sont confiés, sans confirmation à chaque envoi "
+                    "(texte masqué, contrôle de fuite avant chaque envoi). /accord non pour le révoquer.")
+        return (f"Pas d'accord de session : vos messages sont reformulés localement par Qwen ; tout envoi "
+                f"externe d'un rôle en texte libre est confirmé (o/n). /accord oui pour autoriser {self.label()}.")
 
     # ------------------------------------------------------------ reformulation
 
@@ -212,7 +216,7 @@ class Reformulator:
                 ok = bool(ask is not None and ask(self.question()))
                 if ok:
                     try:
-                        self.router.grant_session_consent(self.role, provider)
+                        self.router.grant_session_consent_all(provider)
                     except PolicyError:
                         ok = False
                 self.router.log_choice(self.role, self.router.routes[self.role].agent,
@@ -257,15 +261,67 @@ class Reformulator:
 
 # ------------------------------------------------------- données personnelles
 
-# Laxiste volontairement (limite connue, à resserrer en V3) : seuls les identifiants structurés
-# basculent en profil restrictif. Noms, adresses, codes postaux... ne déclenchent rien (trop de faux
-# positifs : « Android TV », « Une API »), mais restent masqués avant tout envoi externe.
-TRIGGER_KINDS = frozenset({"EMAIL", "IBAN", "NIR", "TELEPHONE", "NAISSANCE"})
+# Détecteur resserré en V3 : en plus des identifiants structurés (e-mail, IBAN, NIR, téléphone,
+# date de naissance), SIRET/SIREN, adresses postales (« 12 rue ... »), valeurs déclarées par le
+# profil et noms de personnes basculent en profil restrictif. Deux filtres évitent les faux
+# positifs courants : un code postal seul (« budget 15000 euros ») ne compte que suivi d'un nom de
+# ville (« 75011 Paris ») ; un motif « Mot MAJUSCULES » ne compte que si le mot en majuscules
+# n'est pas un sigle courant (« Android TV », « Une API REST ») et que le premier mot n'est pas un
+# mot outil. Une civilité suivie d'un nom (« M. Dupont », « Mme Martin ») compte toujours.
+# Tout reste de toute façon masqué avant un envoi externe.
+TRIGGER_KINDS = frozenset({"EMAIL", "IBAN", "NIR", "TELEPHONE", "NAISSANCE", "SIRET", "ADRESSE", "DECLARE"})
+
+# Sigles et mots en majuscules fréquents dans des demandes sans donnée personnelle.
+_SIGLES = frozenset("""
+API REST TV PC OS IA AI ML LLM GPU CPU RAM VRAM SSD USB HDMI UI UX SDK CLI IDE PDF CSV JSON XML YAML HTML CSS
+JS SQL NOSQL HTTP HTTPS URL URI DNS VPN IP TCP UDP SMS MMS GPS NFC QR RGPD GDPR CNIL CRM ERP SAAS PAAS IAAS B2B
+B2C PME TPE ETI SA SAS SARL SASU EURL EI CEO CTO CFO RH DRH IT DSI MVP POC KPI ROI FAQ SEO SEM CMS PWA IOS
+ANDROID MAC WIFI BTS DUT BUT IUT MBA PHD AWS GCP AZURE TTC HT TVA EUR USD UE EU USA UK FR TODO OK NB PS AR VR
+XR RSS SVG PNG JPG JPEG GIF MP3 MP4 IOT ESN SSII DEVOPS CI CD QA ETL BI AB RTX GTX
+""".split())
+# Mots outils qui commencent souvent une phrase (« Une API », « Pour SNCF »).
+_MOTS_OUTILS = frozenset("""
+un une le la les des du de l au aux ce cet cette ces mon ma mes ton ta tes son sa ses notre nos votre vos leur
+leurs pour par avec sans sur sous dans en chez vers et ou mais donc car ni si comme quand fais faire faites
+propose proposez crée créer créez écris écrire écrivez donne donner trouve trouver trouvez utilise utiliser
+application appli app projet outil site logiciel jeu service version mode format fichier
+""".split())
+
+_UP = "A-ZÀÂÄÇÉÈÊËÎÏÔÖÙÛÜŸ"
+_LOW = "a-zàâäçéèêëîïôöùûüÿ"
+_CIVILITE_RE = re.compile(
+    rf"\b(?:M\.|Mme|Mlle|Monsieur|Madame|Mademoiselle|Dr|Docteur|Me|Maître|Pr)\.?[ ]+[{_UP}][{_UP}{_LOW}'’-]+")
+_NOM_MAJ_RE = re.compile(rf"\b([{_UP}][{_LOW}]+(?:[-'’][{_UP}]?[{_LOW}]+)*)((?:[ ]+[{_UP}](?:[{_UP}'’-]*[{_UP}])+)+)(?!\w)")
+# SIREN (9 chiffres) : seulement annoncé (« SIREN 123 456 789 », « RCS ... ») ; un montant comme
+# « 150 000 000 euros » a la même forme.
+_SIREN_RE = re.compile(r"\b(?:siren|siret|rcs|n°\s*entreprise)\b\D{0,15}\d{3}[ .]?\d{3}[ .]?\d{3}\b", re.IGNORECASE)
+_CP_VILLE_RE = re.compile(rf"\b(?:0[1-9]|[1-8]\d|9[0-8])\d{{3}}[ ]+[{_UP}][{_LOW}]+")
+
+
+def _person_triggers(text: str) -> bool:
+    if _CIVILITE_RE.search(text):
+        return True
+    for m in _NOM_MAJ_RE.finditer(text):
+        first = m.group(1).casefold()
+        caps = [w.strip("'’-") for w in m.group(2).split()]
+        if first in _MOTS_OUTILS:
+            continue
+        if all(w.upper() in _SIGLES for w in caps):
+            continue
+        return True
+    return False
 
 
 def personal_kinds(text: str, declared: Iterable[str] = ()) -> List[str]:
-    """Types de données personnelles détectés par le CODE (détecteurs déterministes)."""
-    return sorted({f.kind for f in detect(text, declared=declared) if f.kind in TRIGGER_KINDS})
+    """Types de données personnelles qui font basculer en profil restrictif (détection par le CODE)."""
+    kinds = {f.kind for f in detect(text, declared=declared) if f.kind in TRIGGER_KINDS}
+    if _person_triggers(text):
+        kinds.add("PERSONNE")
+    if _CP_VILLE_RE.search(text):
+        kinds.add("CODE_POSTAL")
+    if _SIREN_RE.search(text):
+        kinds.add("SIREN")
+    return sorted(kinds)
 
 
 # --------------------------------------------------------------------- profils
@@ -310,7 +366,9 @@ def choose_profile(proposed: str, names: Sequence[str], *, current: Optional[str
 
 # ------------------------------------------------------------- retours libres
 
-SKIP_REASONS = {"", "sans raison", "pas de raison", "aucune", "aucune raison", "passer", "non", "rien", "-", "skip"}
+# « o », « oui », « ok » : réponse réflexe à une question o/n, jamais une raison (vu en réel : « raison : o »).
+SKIP_REASONS = {"", "sans raison", "pas de raison", "aucune", "aucune raison", "passer", "non", "rien", "-", "skip",
+                "o", "oui", "ok", "n", "pas d'idée", "je sais pas", "je ne sais pas", "aucune idée"}
 
 
 def is_skip_reason(text: str) -> bool:

@@ -1,7 +1,7 @@
 """Vérification de base d'une sortie de worker, appliquée par le bus avant tout retour.
 
 Retourne la liste des problèmes ; une liste vide signifie « vérifié ».
-Le contrôle de promesse (Qwen 3.5 4B) est dans verify/promise.py.
+Le contrôle de promesse (rôle « promesse ») est dans verify/promise.py.
 """
 
 from __future__ import annotations

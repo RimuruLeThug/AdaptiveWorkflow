@@ -2,7 +2,7 @@
 
 Déroulé, chaque étape décidée par le code :
 1. candidature : idée validée par l'utilisateur, approuvée 2/3 par les reviewers,
-   et score de complexité > seuil. Qwen 3.5 4B estime les composantes (fichiers
+   et score de complexité > seuil. l'agent « interface » estime les composantes (fichiers
    touchés, dépendances nouvelles, risque de régression) ; le CODE calcule le score ;
 2. contrat d'idée construit par le code (promesse, périmètre, hors périmètre,
    contraintes non négociables), montré et validé par l'utilisateur, puis figé ;
@@ -11,7 +11,7 @@ Déroulé, chaque étape décidée par le code :
    et impact, retiré, reporté) ;
 5. contrôles automatiques : JSON + schéma ; contraintes non négociables toutes
    présentes ; aucun élément hors périmètre ajouté au périmètre ; tout « modifié »
-   justifié ; promesse identique (question fermée à Qwen 3.5 4B). Un échec rejette
+   justifié ; promesse identique (question fermée à l'agent « promesse »). Un échec rejette
    la version ; une nouvelle tentative repart du contrat initial.
 
 Fournisseurs du grand modèle en V1 : Gemini Flash-Lite (gratuit, quota commun)

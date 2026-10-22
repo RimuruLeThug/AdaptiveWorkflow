@@ -207,7 +207,7 @@ class DedupCommandTest(Harness):
         self.out.clear()
         a.handle("/dedup")
         t = self.text()
-        self.assertIn("Déduplication locale de 4 idées (0 requête Gemini)", t)
+        self.assertIn("Déduplication de 4 idées par Qwen (local, 0 requête Gemini)", t)
         self.assertIn("1 <- 3 (qwen)", t)
         self.assertEqual([i.id for i in a.last_dedup.kept], [1, 2, 4])
 
@@ -262,7 +262,7 @@ class ReviewCommandTest(Harness):
         self.out.clear()
         a.handle("/revue")
         t = self.text()
-        self.assertIn("Déduplication locale de 3 idées", t)  # dédup automatique si absente
+        self.assertIn("Déduplication de 3 idées", t)  # dédup automatique si absente
         self.assertIn("=== Revue", t)
         self.assertEqual(len(self.review_client.calls), 3)
         a.handle("/valider 1, 3")

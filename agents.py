@@ -1,4 +1,4 @@
-"""Agents IA interchangeables (roadmap V2).
+"""Agents IA interchangeables (V2, défauts V3).
 
 Le code décide, les modèles proposent : ce module ne fait que choisir QUEL modèle
 traite une requête, selon une configuration, puis normaliser sa réponse.
@@ -10,10 +10,12 @@ traite une requête, selon une configuration, puis normaliser sa réponse.
   file unique du limiteur), ClaudeAgent (ClaudeCodeClient, abonnement Pro).
 - Backend local alternatif (LocalOpenAIBackend) : serveur compatible OpenAI sur la
   machine, construit sur l'ABC LocalLLM ; testé uniquement avec des doubles.
-- Registre d'agents nommés (AgentRegistry) : qwen_interface, qwen_format, gemini,
-  gemini_test, claude, plus les agents déclarés par configuration ou profil.
-- Rôles (ROLES) et affectation rôle -> agents (RoleRoute) : défauts du projet,
-  puis variables d'environnement AGENT_<ROLE>, puis profil (clé « agents »).
+- Registre d'agents nommés (AgentRegistry) : claude_haiku, qwen (modèle local unique ;
+  qwen_interface et qwen_format en sont des alias), gemini, gemini_test, claude, plus les
+  agents déclarés par configuration ou profil.
+- Rôles (ROLES) et affectation rôle -> agents (RoleRoute) : défauts du projet (V3 : tous les
+  rôles sur claude_haiku, repli sur le Qwen local), puis variables d'environnement
+  AGENT_<ROLE>, puis profil (clé « agents »).
 - Routage (AgentRouter) : critère déterministe simple/difficile, replis sur
   indisponibilité ou échec (timeout, 429, vide, hors schéma), journal de chaque
   choix (RunLogger du bus ou équivalent).
@@ -23,15 +25,16 @@ traite une requête, selon une configuration, puis normaliser sa réponse.
   Le squelette n'est pas modifié : on remplace un agent par configuration.
 
 Confidentialité (privacy/, jamais assouplie) : un rôle confié à Gemini ou Claude est
-un envoi externe. Profil « données personnelles » : tout agent externe est refusé
-(PolicyError), avant le moindre envoi, y compris en repli. Sinon : masquage et
-contrôle de fuite avant l'envoi, et confirmation de l'utilisateur (aperçu masqué,
-destinataire nommé, redemandée si le repli change de destinataire) pour tout rôle dont
-le contenu peut dériver du texte libre (rôles Qwen : routage, cadrage, réparation...).
-Seul le rôle « reformulation » (accord_session) accepte, à la place, un accord unique de
-session limité à CE rôle et CE fournisseur (grant/revoke_session_consent), caduc en profil
-« données personnelles » ; masquage et contrôle de fuite restent faits avant chaque envoi.
-Les valeurs réelles sont réinjectées en local par le code.
+un envoi externe. Profil « données personnelles » : tout agent externe est écarté avant
+le moindre envoi, y compris en repli, et le rôle est traité par son agent local (Qwen,
+repli automatique V3) ; rien ne quitte la machine. Sinon : masquage et contrôle de fuite
+avant l'envoi, et confirmation de l'utilisateur (aperçu masqué, destinataire nommé,
+redemandée si le repli change de destinataire) pour tout rôle dont le contenu peut dériver
+du texte libre (routage, cadrage, réparation...). Ces rôles (accord_session) acceptent, à la
+place, un accord unique de session pour UN fournisseur (grant/revoke_session_consent), donné
+explicitement par l'utilisateur et caduc en profil « données personnelles » ; masquage et
+contrôle de fuite restent faits avant chaque envoi. Les valeurs réelles sont réinjectées en
+local par le code.
 
 Quota journalier Gemini épuisé : aucun autre agent Gemini n'est tenté et, faute de repli
 non Gemini abouti, RoleDailyQuotaError (sous-classe de GeminiDailyQuotaError) arrête le
@@ -77,35 +80,49 @@ class RoleInfo:
     # à la place de la confirmation par envoi. Masquage et contrôle de fuite restent faits
     # avant CHAQUE envoi ; jamais pour un profil « données personnelles ».
     accord_session: bool = False
+    # Agent local du rôle : repli par défaut, et seul agent utilisé en profil « données personnelles ».
+    local_agent: str = "qwen"
 
+
+DEFAULT_AGENT = "claude_haiku"  # V3 : agent par défaut de tous les rôles
+LOCAL_AGENT = "qwen"  # V3 : modèle local unique (Ollama)
 
 ROLES: Dict[str, RoleInfo] = {r.name: r for r in (
-    RoleInfo("organisateur", "décompose la tâche et délègue aux workers", "gemini"),
-    RoleInfo("worker", "exécute une consigne isolée", "gemini"),
-    RoleInfo("relecteur", "note les idées (revue)", "gemini"),
-    RoleInfo("grand_modele", "étudie une idée validée (escalade)", "gemini"),
-    RoleInfo("interface", "interface locale, résumés", "qwen_interface", free_text=True),
-    RoleInfo("cadrage", "cadrage de la fiche projet", "qwen_interface", free_text=True),
-    RoleInfo("routage", "propose une commande à partir du texte libre", "qwen_interface", free_text=True),
-    RoleInfo("promesse", "contrôle de promesse, réponse fermée oui/non", "qwen_interface", free_text=True),
-    RoleInfo("format", "mise en forme JSON", "qwen_format", free_text=True),
-    RoleInfo("dedup", "dédoublonnage des idées", "qwen_format", free_text=True),
+    RoleInfo("organisateur", "décompose la tâche et délègue aux workers", DEFAULT_AGENT),
+    RoleInfo("worker", "exécute une consigne isolée", DEFAULT_AGENT),
+    RoleInfo("relecteur", "note les idées (revue)", DEFAULT_AGENT),
+    RoleInfo("grand_modele", "étudie une idée validée (escalade)", DEFAULT_AGENT),
+    RoleInfo("interface", "interface, résumés", DEFAULT_AGENT, free_text=True, accord_session=True),
+    RoleInfo("cadrage", "cadrage de la fiche projet", DEFAULT_AGENT, free_text=True, accord_session=True),
+    RoleInfo("routage", "propose une commande à partir du texte libre", DEFAULT_AGENT, free_text=True,
+             accord_session=True),
+    RoleInfo("promesse", "contrôle de promesse, réponse fermée oui/non", DEFAULT_AGENT, free_text=True,
+             accord_session=True),
+    RoleInfo("format", "mise en forme JSON", DEFAULT_AGENT, free_text=True, accord_session=True),
+    RoleInfo("dedup", "dédoublonnage des idées", DEFAULT_AGENT, free_text=True, accord_session=True),
     # Répare aussi le JSON invalide d'un rôle en texte libre (routage, cadrage...) : même règle.
-    RoleInfo("reparation", "réparation d'un JSON invalide", "qwen_format", free_text=True),
+    RoleInfo("reparation", "réparation d'un JSON invalide", DEFAULT_AGENT, free_text=True, accord_session=True),
     # Reçoit directement le texte libre : envoi externe seulement après l'accord de session.
-    RoleInfo("reformulation", "reformule le texte libre en demande claire pour Qwen", "gemini",
+    RoleInfo("reformulation", "reformule le texte libre en demande claire", DEFAULT_AGENT,
              free_text=True, accord_session=True),
 )}
 
+# Rôles qui étaient locaux (Qwen) en V2 : ils voient le texte libre ; leur envoi externe exige
+# la confirmation ou l'accord de session.
+TEXTE_LIBRE_ROLES = ("interface", "cadrage", "routage", "promesse", "format", "dedup", "reparation",
+                     "reformulation")
+
 if tuple(ROLES) != tuple(config.AGENT_ROLES):  # garde-fou : une seule liste de rôles
     raise RuntimeError("agents.ROLES et config.AGENT_ROLES divergent")
-# Garde-fou : un rôle local par défaut (Qwen) peut voir le texte libre ; le confier à un agent
-# externe ne doit jamais se faire sans confirmation.
-if any(not r.free_text for r in ROLES.values() if r.default_agent.startswith("qwen")):
-    raise RuntimeError("un rôle Qwen doit exiger la confirmation de tout envoi externe (free_text=True)")
+# Garde-fou : un rôle qui peut voir le texte libre ne doit jamais l'envoyer dehors sans confirmation.
+if any(not ROLES[r].free_text for r in TEXTE_LIBRE_ROLES):
+    raise RuntimeError("un rôle en texte libre doit exiger la confirmation de tout envoi externe (free_text=True)")
 # Garde-fou : l'accord de session ne remplace la confirmation que pour un rôle en texte libre.
 if any(r.accord_session and not r.free_text for r in ROLES.values()):
     raise RuntimeError("accord_session réservé aux rôles en texte libre")
+# Garde-fou : l'agent local d'un rôle est un agent local intégré (jamais externe).
+if any(r.local_agent not in ("qwen", "qwen_interface", "qwen_format") for r in ROLES.values()):
+    raise RuntimeError("l'agent local d'un rôle doit être le Qwen local")
 
 # Fournisseur technique -> fournisseur au sens de la politique de données (privacy/policy.py).
 PROVIDER_POLICY = {"ollama": "local", "local_openai": "local", "gemini": "gemini", "claude": "claude"}
@@ -361,6 +378,10 @@ class GeminiAgent(Agent):
         if not self.spec.model:
             var = self.spec.option("variable")
             return f"modèle non renseigné ({var} vide)" if var else "modèle non renseigné"
+        try:
+            self.client  # construction locale, sans réseau : clé absente = indisponible avant tout aperçu
+        except AgentUnavailable as exc:
+            return str(exc)
         return ""
 
     @property
@@ -399,6 +420,28 @@ class ClaudeAgent(Agent):
             raise ValueError(f"agent {spec.name} : fournisseur {spec.provider}, claude attendu")
         super().__init__(spec, **kw)
         self.client = client
+        # Claude Code absent, non connecté ou connecté par clé API : inutile de relancer un
+        # processus à chaque appel ; l'agent reste indisponible pour la session (replis directs).
+        self._missing = ""
+        self._probed = False
+
+    def unavailable_reason(self) -> str:
+        reason = super().unavailable_reason() or self._missing
+        if not reason and not self._probed:
+            # Sonde gratuite (aucun processus lancé) : commande « claude » introuvable = indisponible,
+            # AVANT tout masquage ou demande de confirmation d'un envoi qui ne pourrait pas partir.
+            self._probed = True
+            executable = getattr(self.client, "executable", None)
+            if callable(executable):
+                try:
+                    executable()
+                except ClaudeCodeError as exc:
+                    self._missing = reason = str(exc)
+        return reason
+
+    def mark_unavailable(self, reason: str) -> None:
+        """Indisponible pour la session (ex. vérification de connexion échouée au démarrage)."""
+        self._missing = reason or "indisponible"
 
     def _generate(self, prompt, *, system, temperature, schema, json_output) -> RawReply:
         try:
@@ -407,6 +450,8 @@ class ClaudeAgent(Agent):
         except ClaudeCodeError as exc:
             msg = str(exc)
             unavailable = any(s in msg for s in ("pas installé", "pas connecté", "facturerait", "pas pu démarrer"))
+            if unavailable:
+                self._missing = msg
             raise _classify(msg, AgentUnavailable if unavailable else AgentError)(
                 f"agent {self.spec.name} : {msg}") from None
         return RawReply(r.text, r.attempts, r.input_tokens, r.output_tokens, r.truncated)
@@ -535,22 +580,28 @@ class AgentRegistry:
         return self._agents[name]
 
 
-BUILTIN_EXTERNAL = {"gemini", "gemini_test", "claude"}
+BUILTIN_EXTERNAL = {"gemini", "gemini_test", "claude", "claude_haiku"}
 DECLARATION_KEYS = {"fournisseur", "modele", "num_ctx", "hote", "timeout_s"}
 
 
+# V3 : un seul modèle Qwen local. « qwen_interface » et « qwen_format » (noms de la V2) sont
+# conservés comme alias du même modèle, avec les mêmes options : Ollama ne le charge qu'une fois.
+QWEN_ALIASES = ("qwen_interface", "qwen_format")
+
+
 def builtin_specs(s: config.Settings) -> List[AgentSpec]:
+    qwen_opts = (("num_ctx", s.qwen_num_ctx), ("think", False))
     return [
-        AgentSpec("qwen_interface", "ollama", s.qwen_interface_model,
-                  (("num_ctx", s.qwen_interface_num_ctx), ("think", False))),
-        AgentSpec("qwen_format", "ollama", s.qwen_format_model, (("num_ctx", s.qwen_format_num_ctx), ("think", None))),
+        AgentSpec("claude_haiku", "claude", s.claude_haiku_model, (("variable", "CLAUDE_HAIKU_MODEL"),)),
+        AgentSpec("qwen", "ollama", s.qwen_model, qwen_opts),
+        *(AgentSpec(alias, "ollama", s.qwen_model, qwen_opts) for alias in QWEN_ALIASES),
         AgentSpec("gemini", "gemini", s.gemini_model, (("variable", "GEMINI_MODEL"),)),
         AgentSpec("gemini_test", "gemini", s.gemini_test_model, (("variable", "GEMINI_TEST_MODEL"),)),
         AgentSpec("claude", "claude", s.claude_model, (("variable", "CLAUDE_MODEL"),)),
     ]
 
 
-BUILTIN_NAMES = ("qwen_interface", "qwen_format", "gemini", "gemini_test", "claude")
+BUILTIN_NAMES = ("claude_haiku", "qwen", "qwen_interface", "qwen_format", "gemini", "gemini_test", "claude")
 
 
 def parse_declarations(raw: Any, *, source: str) -> List[AgentSpec]:
@@ -721,12 +772,14 @@ def _role_entry(role: str, value: Any, base: RoleRoute, source: str) -> RoleRout
 
 
 def default_routes(s: config.Settings) -> Dict[str, RoleRoute]:
+    """Défauts V3 : agent du rôle (claude_haiku), puis repli sur son agent local (Qwen)."""
     routes = {}
     for role, info in ROLES.items():
         agent = info.default_agent
         if role == "grand_modele" and s.big_model_provider in ("gemini", "claude"):
             agent = s.big_model_provider
-        routes[role] = RoleRoute(role, agent, seuil_caracteres=s.agent_seuil_caracteres,
+        repli = () if agent == info.local_agent else (info.local_agent,)
+        routes[role] = RoleRoute(role, agent, repli=repli, seuil_caracteres=s.agent_seuil_caracteres,
                                  seuil_score=s.agent_seuil_score)
     return routes
 
@@ -823,7 +876,7 @@ class AgentRouter:
         self.journal: List[dict] = []
         # Accords de session : {(rôle, fournisseur de politique)}. Jamais d'accord global.
         self._session_consent: set = set()
-        # Réparation JSON par le rôle « reparation » (Qwen 2.5 3B par défaut), soumis aux mêmes règles.
+        # Réparation JSON par le rôle « reparation » (claude_haiku puis qwen par défaut), mêmes règles.
         self.repair_llm: Optional[LocalLLM] = (RoleLLM(self, "reparation")
                                                if repair and "reparation" in self.routes else None)
 
@@ -856,6 +909,16 @@ class AgentRouter:
             raise ValueError(f"fournisseur externe attendu : {provider!r}")
         check_provider(provider, personal_data=self.personal_data())  # lève PolicyError
         self._session_consent.add((role, provider))
+
+    def grant_session_consent_all(self, provider: str) -> List[str]:
+        """Accord explicite de l'utilisateur pour UN fournisseur, sur tous les rôles à accord de
+        session dont un agent relève de ce fournisseur. Retourne ces rôles. Lève PolicyError en
+        profil « données personnelles » (avant tout envoi)."""
+        roles = [role for role, info in ROLES.items() if info.accord_session and role in self.routes
+                 and any(self.registry.spec(a).policy_provider == provider for a in self.routes[role].agents())]
+        for role in roles:
+            self.grant_session_consent(role, provider)
+        return roles
 
     def revoke_session_consent(self, role: Optional[str] = None) -> None:
         """Révoque l'accord d'un rôle, ou tous les accords (role=None)."""
@@ -948,13 +1011,23 @@ class AgentRouter:
         candidates, reason = self.routes[role].plan(prompt, score)
         specs = [self.registry.spec(n) for n in candidates]
 
-        # 1. Politique de données, AVANT tout envoi et pour TOUS les candidats (replis compris).
+        # 1. Politique de données, AVANT tout envoi et pour TOUS les candidats (replis compris) :
+        #    en profil « données personnelles », les agents externes sont écartés et le rôle est
+        #    traité en local (agent local du rôle, Qwen par défaut). Rien ne quitte la machine.
         if self.personal_data():
             self.revoke_session_consent()  # profil « données personnelles » : accords caducs (écriture explicite)
+            kept = []
             for i, sp in enumerate(specs, 1):
                 if sp.external:
                     self._log(role, sp, "refuse_politique", reason, attempt=i)
-                    check_provider(sp.policy_provider, personal_data=True)  # lève PolicyError
+                else:
+                    kept.append(sp)
+            if not kept:
+                local = ROLES[role].local_agent if role in ROLES else LOCAL_AGENT
+                kept = [self.registry.spec(local)]
+            if kept[0].name != specs[0].name:
+                reason = f"profil « données personnelles » : repli local -> {kept[0].name}"
+            specs = kept
 
         failures: List[Tuple[str, str]] = []
         outbound: Optional[Tuple[str, str]] = None  # (texte masqué, aperçu), préparés une seule fois

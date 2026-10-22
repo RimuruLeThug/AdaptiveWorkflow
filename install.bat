@@ -30,7 +30,7 @@ if exist ".env" (
   echo [OK] Le fichier .env existe deja : il n'est pas modifie.
 ) else (
   copy ".env.example" ".env" >nul
-  echo [OK] Fichier .env cree. Ouvrez-le et renseignez GEMINI_API_KEY=votre_cle
+  echo [OK] Fichier .env cree. GEMINI_API_KEY n'est utile que si un role est confie a Gemini
   echo      Cle gratuite : https://aistudio.google.com ^(Cles API^)
 )
 
@@ -38,21 +38,31 @@ echo.
 where ollama >nul 2>nul
 if errorlevel 1 (
   echo [A FAIRE] Ollama est introuvable. Installez-le depuis https://ollama.com puis relancez ce script.
-  goto fin
+  echo           ^(Modele local : replis et profils donnees personnelles.^)
+  goto claude
 )
 echo [OK] Ollama detecte.
-set /p PULL="Telecharger les deux modeles Qwen (environ 7 Go) ? (o/n) : "
+set /p PULL="Telecharger le modele Qwen local qwen3.5:9b-q4_K_M (environ 6,6 Go) ? (o/n) : "
 if /i "%PULL%"=="o" (
-  ollama pull qwen3.5:4b-q8_0
-  ollama pull qwen2.5:3b-instruct-q4_K_M
+  ollama pull qwen3.5:9b-q4_K_M
 ) else (
-  echo Telechargement ignore. Commandes manuelles :
-  echo   ollama pull qwen3.5:4b-q8_0
-  echo   ollama pull qwen2.5:3b-instruct-q4_K_M
+  echo Telechargement ignore. Commande manuelle :
+  echo   ollama pull qwen3.5:9b-q4_K_M
 )
 
 echo.
-echo === Termine. Renseignez GEMINI_API_KEY dans .env, puis lancez start.bat ===
+:claude
+where claude >nul 2>nul
+if errorlevel 1 (
+  echo [A FAIRE] Claude Code est introuvable. C'est l'agent par defaut de tous les roles ^(V3^).
+  echo           Installez-le ^(https://claude.com/claude-code^), puis : claude auth login
+  echo           Sans lui, tout passe au Qwen local.
+) else (
+  echo [OK] Claude Code detecte. Connexion ^(compte claude.ai^) : claude auth login
+)
+
+echo.
+echo === Termine. Lancez start.bat ^(GEMINI_API_KEY dans .env seulement si un role utilise Gemini^) ===
 :fin
 echo.
 pause

@@ -8,8 +8,8 @@ Values come from `config.py` (`load_settings()`, defaults in `Settings`) and can
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `GEMINI_API_KEY` | (required) | Gemini key. The program refuses to start without it. |
-| `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Model of the organizer, workers and reviewers (and of the Gemini roles by default) |
+| `GEMINI_API_KEY` | empty (optional since V3) | Gemini key. Needed only if a role is assigned to Gemini or `/organisateur gemini` is used; without it, Gemini agents are unavailable. |
+| `GEMINI_MODEL` | `gemini-3.5-flash-lite` | Model of the `gemini` agent |
 | `GEMINI_TIMEOUT_S` | `120` | Timeout of one request, in seconds |
 | `GEMINI_MIN_INTERVAL_S` | `5` | Minimum spacing between two requests (5 s = 12 per minute) |
 | `GEMINI_DAILY_ALERT` | `1200` | Daily count from which a warning is logged |
@@ -39,8 +39,9 @@ A profile can override the review threshold and the shortlist size in its `revue
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `BIG_MODEL_PROVIDER` | `gemini` | `gemini` or `claude`: provider of the big model used by `/escalader` (`/grand` changes it at runtime) |
-| `CLAUDE_MODEL` | `sonnet` | Claude Code alias: `sonnet`, `opus`, `haiku`... |
+| `BIG_MODEL_PROVIDER` | empty | Empty: the agent of the `grand_modele` role (`claude_haiku` by default). `gemini` or `claude` forces that agent for the role (`/grand` changes it at runtime) |
+| `CLAUDE_HAIKU_MODEL` | `haiku` | Claude Code alias of the `claude_haiku` agent, default agent of every role in V3 |
+| `CLAUDE_MODEL` | `sonnet` | Claude Code alias of the `claude` agent: `sonnet`, `opus`, `haiku`... |
 | `CLAUDE_TIMEOUT_S` | `600` | Timeout of one Claude call (not in `.env.example`) |
 | `CLAUDE_ALLOW_API_BILLING` | off | `1`, `true` or `oui` accepts an API-key login, which bills the API. Leave off. |
 | `COMPLEXITY_THRESHOLD` | `5` | Complexity score above which an idea is a candidate for escalation |
@@ -49,14 +50,12 @@ A profile can override the review threshold and the shortlist size in its `revue
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `QWEN_INTERFACE_MODEL` | `qwen3.5:4b-q8_0` | Qwen 3.5 4B: interface, framing, routing, promise check, reformulation fallback |
-| `QWEN_FORMAT_MODEL` | `qwen2.5:3b-instruct-q4_K_M` | Qwen 2.5 3B: deduplication and JSON repair |
+| `QWEN_MODEL` | `qwen3.5:9b-q4_K_M` | The single local model (V3): fallback of every role, every role in a personal-data profile, indirect clues of the masking. Agents `qwen`, `qwen_interface`, `qwen_format` all use it. |
+| `QWEN_NUM_CTX` | `16384` | Context size of the local model (one value, so Ollama does not reload the model between uses) |
 | `OLLAMA_HOST_URL` | `http://localhost:11434` | Ollama address |
-| `QWEN_INTERFACE_NUM_CTX` | `8192` | Context size, interface model (not in `.env.example`) |
-| `QWEN_FORMAT_NUM_CTX` | `16384` | Context size, format model (not in `.env.example`) |
 | `LOCAL_KEEP_ALIVE` | `2m` | How long Ollama keeps a model in VRAM after its last request. `0` unloads at once. |
 
-Model names must match `ollama list`. If a model is missing, the startup message says so (see [troubleshooting.md](troubleshooting.md)).
+Model names must match `ollama list`. If the model is missing, a startup warning says so (see [troubleshooting.md](troubleshooting.md)); the program still starts. The V2 variables `QWEN_INTERFACE_MODEL`, `QWEN_FORMAT_MODEL`, `QWEN_INTERFACE_NUM_CTX` and `QWEN_FORMAT_NUM_CTX` are ignored since V3, with a startup warning if they are still set.
 
 ## Folders and startup profile
 
@@ -72,28 +71,29 @@ Model names must match `ollama list`. If a model is missing, the startup message
 |---|---|---|
 | `FEEDBACK_EXEMPLES` | `5` | Number of recent feedback decisions given to Qwen as examples. `0` disables them. Never used in a personal-data profile. |
 | `PROFIL_DONNEES_PERSO` | `bureautique_fictive` | Restrictive profile the code switches to when personal data is detected in free text |
+| `MODE_CONVERSATION` | `1` | Conversation mode: talk to the assistant without any command (history in memory, natural confirmations). `0` restores the free-language mode where a command is proposed. |
 
 ## Agents
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `AGENT_<ROLE>` | none (role default) | Agent(s) of a role: `agent` or `agent,fallback1,fallback2` |
+| `AGENT_<ROLE>` | none (role default: `claude_haiku,qwen`) | Agent(s) of a role: `agent` or `agent,fallback1,fallback2` |
 | `AGENT_<ROLE>_DIFFICILE` | none | Agent used for tasks judged hard (length or score criterion) |
 | `AGENT_SEUIL_CARACTERES` | `6000` | Prompt length from which a task is hard (only if a `_DIFFICILE` agent exists) |
 | `AGENT_SEUIL_SCORE` | `5` | Complexity score from which a task is hard, when a score is given |
 | `AGENT_DECLARATIONS` | empty | Extra agents, as a JSON object `{"name": {"fournisseur": ..., "modele": ...}}` |
 
-Roles (`<ROLE>` in upper case): `ORGANISATEUR`, `WORKER`, `RELECTEUR`, `GRAND_MODELE`, `INTERFACE`, `CADRAGE`, `ROUTAGE`, `PROMESSE`, `FORMAT`, `DEDUP`, `REPARATION`, `REFORMULATION`. Defaults: `organisateur`, `worker`, `relecteur`, `grand_modele` and `reformulation` use Gemini; the other roles use the Qwen models. Examples: `AGENT_REFORMULATION=qwen_interface`, `AGENT_DEDUP=qwen_format,qwen_interface`. Any role sent to Gemini or Claude is an external send; see [agents.md](agents.md).
+Roles (`<ROLE>` in upper case): `ORGANISATEUR`, `WORKER`, `RELECTEUR`, `GRAND_MODELE`, `INTERFACE`, `CADRAGE`, `ROUTAGE`, `PROMESSE`, `FORMAT`, `DEDUP`, `REPARATION`, `REFORMULATION`. Defaults (V3): every role uses `claude_haiku`, then `qwen` as fallback. Examples: `AGENT_REFORMULATION=qwen`, `AGENT_WORKER=gemini,qwen`, `AGENT_DEDUP=qwen`. Zero-cost setup: assign the generation roles to `gemini,qwen` and the other roles to `qwen`. Any role sent to Gemini or Claude is an external send; see [agents.md](agents.md).
 
 ## Set at runtime (not in `.env`)
 
 - `/profil <nom>`: profile, and lifts the personal-data lock.
-- `/organisateur`, `/grand`: organizer and big model (`gemini` or `claude`).
-- `/accord oui|non`: session consent for external rephrasing.
+- `/organisateur`, `/grand`: organizer and big model (`agents` = the role, default; or a direct `gemini` / `claude` client).
+- `/accord oui|non`: session consent for one provider, covering rephrasing and the other free-text roles.
 
 ## Profile settings (`profiles/<nom>/profil.json`)
 
-Keys read by `profiles/loader.py`: `nom`, `description`, `donnees_personnelles` (boolean, required), `workers` (required), `revue` (`seuil`, `shortlist_min`, `shortlist_max`), `champs_utiles`, `champs_personnels`, `exemples`, `agents`. A profile with `donnees_personnelles: true` cannot declare or use any external agent.
+Keys read by `profiles/loader.py`: `nom`, `description`, `donnees_personnelles` (boolean, required), `workers` (required), `revue` (`seuil`, `shortlist_min`, `shortlist_max`), `champs_utiles`, `champs_personnels`, `exemples`, `agents`. A profile with `donnees_personnelles: true` cannot declare or assign any external agent; the default external agents are dropped at call time and every role is handled by the local Qwen.
 
 ## Claude
 

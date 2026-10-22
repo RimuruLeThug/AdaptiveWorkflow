@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 import config
-from agents import ROLES, AgentRateLimited, AgentRouter, AgentSpec, LocalAgent, build_registry, resolve_routes
+from agents import ROLES, TEXTE_LIBRE_ROLES, AgentRateLimited, AgentRouter, AgentSpec, LocalAgent, build_registry, resolve_routes
 from config import GeminiQuota, Settings
 from gemini_client import GeminiClient, HttpResponse
 from local_llm import LocalLLMError
@@ -40,7 +40,9 @@ from workers.dedup import Idea
 
 TEST_MODEL = "gemini_test_remplace"  # valeur fictive de GEMINI_TEST_MODEL : aucun vrai modèle désigné
 ROOT = Path(__file__).resolve().parent.parent
-ACCORD = "Autoriser Gemini à reformuler vos messages (texte masqué, contrôle de fuite avant chaque envoi) ? (o/n) "
+ACCORD = ("Autoriser Gemini pour cette session : reformulation de vos messages et autres rôles en texte libre "
+          "(routage, cadrage, résumés...) ; texte masqué, contrôle de fuite avant chaque envoi. Sinon, "
+          "reformulation locale et confirmation de chaque envoi ? (o/n) ")
 EMAIL = "jean.martin@exemple.fr"  # adresse fictive
 
 
@@ -109,6 +111,7 @@ class Fixture(unittest.TestCase):
         self.llm = FakeLLM(list(llm_answers))
         s = replace(self.settings, agent_roles=self.settings.agent_roles if roles is None else roles)
         reg = build_registry(s, gemini_limiter=self.limiter, gemini_client_factory=self.gemini_factory)
+        reg.register(LocalAgent(AgentSpec("qwen", "ollama", "qwen-factice"), self.llm))
         reg.register(LocalAgent(AgentSpec("qwen_interface", "ollama", "qwen-factice"), self.llm))
         reg.register(LocalAgent(AgentSpec("qwen_format", "ollama", "qwen-format-factice"), FakeLLM([])))
         box = []
@@ -152,14 +155,17 @@ class Fixture(unittest.TestCase):
 
 
 class RoleConfigurationTest(unittest.TestCase):
-    def test_role_reformulation_gemini_par_defaut(self):
+    def test_role_reformulation_claude_haiku_par_defaut(self):
         self.assertIn("reformulation", config.AGENT_ROLES)
         self.assertEqual(tuple(ROLES), tuple(config.AGENT_ROLES))
         info = ROLES["reformulation"]
-        self.assertEqual(info.default_agent, "gemini")
+        self.assertEqual(info.default_agent, "claude_haiku")
         self.assertTrue(info.free_text and info.accord_session)
-        self.assertEqual([r for r, i in ROLES.items() if i.accord_session], ["reformulation"])
-        self.assertEqual(resolve_routes(settings())["reformulation"].agents(), ["gemini"])
+        # V3 : tous les rôles en texte libre acceptent l'accord de session ; jamais les autres.
+        self.assertEqual([r for r, i in ROLES.items() if i.accord_session], list(TEXTE_LIBRE_ROLES))
+        self.assertEqual([r for r, i in ROLES.items() if not i.accord_session],
+                         ["organisateur", "worker", "relecteur", "grand_modele"])
+        self.assertEqual(resolve_routes(settings(v3=True))["reformulation"].agents(), ["claude_haiku", "qwen"])
 
     def test_remplacable_par_configuration_et_par_profil(self):
         with mock.patch.dict(os.environ, {"AGENT_REFORMULATION": "qwen_interface", "GEMINI_TEST_MODEL": TEST_MODEL}):
@@ -220,13 +226,13 @@ class ConsentTest(Fixture):
         self.assertEqual(self.transport.requests, [])
         self.assertEqual(self.llm.calls[0]["messages"][0].content, REFORMULATION_SYSTEM)
         self.assertIn(("gemini_test", "accord_session_refuse"), self.calls())
-        self.assertIn(("qwen_interface", "ok"), self.calls())
+        self.assertIn(("qwen", "ok"), self.calls())
 
     def test_sans_callback_locale(self):
         self.make([reform("locale")])
         r = Reformulator(self.router, self.llm)
         res = r.reformulate("salut", personal=False, ask=None, out=self.outputs.append)
-        self.assertEqual((res.agent, res.external), ("qwen_interface", False))
+        self.assertEqual((res.agent, res.external), ("qwen", False))
         self.assertEqual(self.transport.requests, [])
         self.assertFalse(r.has_consent())
 
@@ -269,7 +275,7 @@ class ConsentTest(Fixture):
         router = router_for(reg, settings(agent_roles=(("reformulation", "gemini_test,claude"),
                                                        ("routage", "gemini_test"))),
                             confirm=lambda p: previews.append(p) or False)
-        for role in ("routage", "worker", "cadrage"):
+        for role in ("worker", "organisateur", "relecteur", "grand_modele"):
             with self.assertRaises(ValueError):
                 router.grant_session_consent(role, "gemini")
         router.grant_session_consent("reformulation", "gemini")
@@ -281,8 +287,8 @@ class ConsentTest(Fixture):
         self.assertEqual(len(previews), 1)
         self.assertIn("« claude »", previews[0])
         self.assertEqual(fakes["claude"].prompts, [])
-        self.assertEqual(res.agent, "qwen_interface")
-        # L'accord de reformulation ne dispense pas le routage externe de sa confirmation.
+        self.assertEqual(res.agent, "qwen")
+        # Un accord donné pour la reformulation seule ne dispense pas le routage de sa confirmation.
         with self.assertRaises(PreviewRefused):
             router.call("routage", "salut")
 
@@ -297,13 +303,13 @@ class FallbackTest(Fixture):
         self.inputs.append("o")
         app.handle("salut")
         self.assertIn("réponse", self.outputs)  # le tour n'est pas cassé
-        self.assertIn("Demande comprise (qwen_interface) : locale", self.outputs)
+        self.assertIn("Demande comprise (qwen) : locale", self.outputs)
         return app
 
     def test_repli_sur_429(self):
         self.run_failure(*[HttpResponse(429, {}, err_body(429, "RESOURCE_EXHAUSTED"))] * 3)
         self.assertIn("Reformulation externe indisponible (http_429)", self.text())
-        self.assertEqual(self.calls()[-2:], [("gemini_test", "http_429"), ("qwen_interface", "ok")])
+        self.assertEqual(self.calls()[-2:], [("gemini_test", "http_429"), ("qwen", "ok")])
 
     def test_repli_sur_reponse_vide(self):
         self.run_failure(HttpResponse(200, {}, json.dumps({"candidates": []}).encode()))
@@ -342,7 +348,7 @@ class PrivacyTest(Fixture):
         res = self.app._ll.reformulator.reformulate("texte", personal=False, ask=lambda q: True,
                                                     out=self.outputs.append)
         self.assertEqual(self.transport.requests, [])
-        self.assertEqual(res.agent, "qwen_interface")
+        self.assertEqual(res.agent, "qwen")
         self.assertIn("Reformulation externe bloquée", self.text())
 
     def test_donnee_perso_detectee_profil_restrictif_prioritaire(self):
@@ -754,14 +760,13 @@ class AccordFallbackTest(Fixture):
 class SessionConsentReadOnlyTest(unittest.TestCase):
     def test_lecture_sans_effet_de_bord_revocation_explicite(self):
         flag = [False]
-        reg, fakes = fake_registry(gemini=[reform("x")])
+        reg, fakes = fake_registry(gemini=[reform("x")], qwen=[reform("locale")])
         router = router_for(reg, settings(agent_roles=(("reformulation", "gemini"),)), personal_data=lambda: flag[0])
         router.grant_session_consent("reformulation", "gemini")
         flag[0] = True
         self.assertFalse(router.has_session_consent("reformulation", "gemini"))
         self.assertEqual(router._session_consent, {("reformulation", "gemini")})  # lecture : état intact
-        with self.assertRaises(PolicyError):
-            router.call("reformulation", "p")
+        self.assertEqual(router.call("reformulation", "p").agent, "qwen")  # V3 : repli local, rien ne part
         self.assertEqual(router._session_consent, set())  # révocation explicite dans le chemin d'envoi
         flag[0] = False
         self.assertFalse(router.has_session_consent("reformulation", "gemini"))
@@ -858,17 +863,19 @@ class ReinjectionTest(Fixture):
 class SingleQueueTest(WiringFixture):
     REFORM = reform("demande")
 
-    def test_reformulation_par_defaut_via_le_client_de_l_application(self):
+    def test_reformulation_gemini_via_le_client_de_l_application(self):
         self.llm.answers.append(json.dumps({"action": "discussion", "argument": "", "reponse": "ok"}))
         self.answer(self.REFORM)
         self.inputs.append("o")
-        app = self.app(self.components(profile=load_profile("brainstorm")))
+        s = replace(self.settings, agent_roles=(("reformulation", "gemini"),))
+        app = self.app(self.components(s, profile=load_profile("brainstorm")))
         app.handle("salut")
         self.assertEqual(self.limiter.used_today, 1)
         self.assertIn(f"/models/{self.settings.gemini_model}:", self.transport.requests[0]["url"])
         self.assertEqual(self.extra_clients, [])  # le GeminiClient de l'application, pas une copie
         self.assertEqual(self.client.requests_sent, 1)
-        calls = [(e["role"], e["agent"], e["result"]) for e in self.logger.events if e["event"] == "agent_call"]
+        calls = [(e["role"], e["agent"], e["result"]) for e in self.logger.events
+                 if e["event"] == "agent_call" and e["role"] == "reformulation"]
         self.assertEqual(calls, [("reformulation", "gemini", "accord_session_donne"),
                                  ("reformulation", "gemini", "ok")])
 
@@ -893,19 +900,41 @@ class SingleQueueTest(WiringFixture):
         ll = c.app_kwargs["langage_libre"]
         self.assertEqual(ll.journal.path, self.tmp / "app" / "retours.jsonl")
         self.assertEqual(ll.n_exemples, self.settings.feedback_exemples)
-        self.assertEqual(ll.reformulator.router.routes["reformulation"].agent, "gemini")
+        self.assertEqual(ll.reformulator.router.routes["reformulation"].agent, "claude_haiku")
 
 
-class LaxDetectorTest(unittest.TestCase):
+class StrictDetectorTest(unittest.TestCase):
+    """V3 : détecteur resserré (noms, adresses, SIRET/SIREN, code postal + ville), sans les faux
+    positifs courants des demandes ordinaires."""
+
     def test_faux_positifs_courants_ne_declenchent_pas(self):
         from qwen_ui.langage_libre import personal_kinds
-        for text in ("Une application pour Android TV", "Une API REST pour Paris Habitat", "budget 15000 euros"):
+        for text in ("Une application pour Android TV", "Une API REST pour Paris Habitat", "budget 15000 euros",
+                     "fais-moi 10 idées d'appli de recettes", "Une app GPS hors ligne", "Projet CRM pour PME",
+                     "Le RGPD et la CNIL", "un budget de 150 000 000 euros", "en 2026 avec 12000 utilisateurs",
+                     "Proposez des idées pour Android TV et iOS", "devis du 75011",
+                     "Utilise le generateur pour proposer 12 idées, dont 2 contrariennes"):
             self.assertEqual(personal_kinds(text), [], text)
 
     def test_identifiants_structures_declenchent(self):
         from qwen_ui.langage_libre import personal_kinds
         self.assertIn("EMAIL", personal_kinds("écris à jean.martin@exemple.fr"))
         self.assertIn("TELEPHONE", personal_kinds("appelle le 06 12 34 56 78"))
+        self.assertIn("SIRET", personal_kinds("SIRET 123 456 789 00012"))
+        self.assertIn("SIREN", personal_kinds("SIREN 123 456 789"))
+
+    def test_noms_adresses_et_codes_postaux_declenchent_en_v3(self):
+        from qwen_ui.langage_libre import personal_kinds
+        cases = {"relance M. Dupont pour la facture": "PERSONNE", "écris à Mme Martin": "PERSONNE",
+                 "relance Jean DUPONT pour la facture": "PERSONNE", "dossier de Hervé LE GALL": "PERSONNE",
+                 "il habite 12 rue des Lilas": "ADRESSE", "livraison au 3 avenue Foch": "ADRESSE",
+                 "quartier 75011 Paris": "CODE_POSTAL"}
+        for text, kind in cases.items():
+            self.assertIn(kind, personal_kinds(text), text)
+
+    def test_valeur_declaree_par_le_profil_declenche(self):
+        from qwen_ui.langage_libre import personal_kinds
+        self.assertIn("DECLARE", personal_kinds("relance dupont pour la facture", declared=["dupont"]))
 
 
 if __name__ == "__main__":

@@ -202,28 +202,20 @@ class OllamaBackend(LocalLLM):
             family = self.model.split(":")[0] + ":"
             variants = [n for n in names if n.startswith(family)]
             hint = (f" Variante déjà installée : {', '.join(variants)} — indiquez-la dans .env "
-                    f"(QWEN_INTERFACE_MODEL=... ou QWEN_FORMAT_MODEL=...).") if variants else ""
+                    f"(QWEN_MODEL=...).") if variants else ""
             raise LocalLLMError(
                 f"Modèle « {self.model} » absent d'Ollama (installés : {', '.join(names) or 'aucun'}). "
                 f"Installez-le : ollama pull {self.model}.{hint}"
             )
 
 
-def build_interface_llm() -> OllamaBackend:
+def build_qwen_llm() -> OllamaBackend:
+    """Le modèle Qwen unique du projet (V3), réflexion désactivée."""
     import config
 
     config.load_dotenv()
     s = config.load_settings()
-    return OllamaBackend(s.qwen_interface_model, host=s.ollama_host, num_ctx=s.qwen_interface_num_ctx,
-                         keep_alive=s.ollama_keep_alive)
-
-
-def build_format_llm() -> OllamaBackend:
-    import config
-
-    config.load_dotenv()
-    s = config.load_settings()
-    return OllamaBackend(s.qwen_format_model, host=s.ollama_host, num_ctx=s.qwen_format_num_ctx, think=None,
+    return OllamaBackend(s.qwen_model, host=s.ollama_host, num_ctx=s.qwen_num_ctx, think=False,
                          keep_alive=s.ollama_keep_alive)
 
 
@@ -259,12 +251,12 @@ def release_vram(
 
 
 def release_project_vram() -> List[str]:
-    """Décharge les deux modèles Qwen du projet (réglages courants de config)."""
+    """Décharge le modèle Qwen du projet (réglages courants de config)."""
     import config
 
     config.load_dotenv()
     s = config.load_settings()
-    return release_vram([s.qwen_interface_model, s.qwen_format_model], host=s.ollama_host)
+    return release_vram([s.qwen_model], host=s.ollama_host)
 
 
 if __name__ == "__main__":
@@ -272,12 +264,11 @@ if __name__ == "__main__":
         done = release_project_vram()
         print("Modèles déchargés de la VRAM : " + (", ".join(done) if done else "aucun (rien n'était chargé)"))
         sys.exit(0)
-    for build in (build_interface_llm, build_format_llm):
-        llm = build()
-        try:
-            llm.check_available()
-            r = llm.ask("Réponds uniquement par le mot : OK", temperature=0)
-            print(f"{llm.model} : {r.text!r} en {r.latency_s:.1f} s ({r.output_tokens} tokens)")
-        except LocalLLMError as exc:
-            print(f"{llm.model} : ÉCHEC — {exc}")
+    llm = build_qwen_llm()
+    try:
+        llm.check_available()
+        r = llm.ask("Réponds uniquement par le mot : OK", temperature=0)
+        print(f"{llm.model} : {r.text!r} en {r.latency_s:.1f} s ({r.output_tokens} tokens)")
+    except LocalLLMError as exc:
+        print(f"{llm.model} : ÉCHEC — {exc}")
     print("Vérifiez ensuite le GPU avec : ollama ps   (colonne PROCESSOR : 100% GPU attendu)")
