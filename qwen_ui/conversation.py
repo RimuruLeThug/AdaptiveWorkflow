@@ -157,10 +157,17 @@ class History:
 # ou de grand modèle, masquer, effacer la fiche, quitter (géré par le code), DONNER un accord
 # d'envoi externe (le modèle peut seulement le faire demander par le code, qui pose la question).
 CONV_ACTIONS = ("discussion", "tache", "fiche", "voir_fiche", "dedup", "revue", "retour", "detail", "resume",
-                "escalader", "quota", "workers", "aide", "confidentialite")
+                "escalader", "quota", "workers", "aide", "confidentialite",
+                # V3.2 : dossier du PC. Le modèle ne peut que PROPOSER « dossier_appliquer » : le code
+                # pose lui-même la question et n'écrit qu'après un « oui » explicite.
+                "dossier", "voir_dossier", "dossier_question", "dossier_travail", "dossier_diff",
+                "dossier_appliquer", "dossier_annuler", "dossier_fermer")
+FOLDER_ACTIONS = frozenset(a for a in CONV_ACTIONS if a.startswith("dossier_") or a == "voir_dossier")
 # Actions confirmées par l'utilisateur AVANT exécution (coût ou envoi). « fiche » est confirmée
 # après le cadrage (la fiche proposée est montrée), « escalader » a ses propres confirmations.
-CONFIRM_BEFORE = frozenset({"tache", "revue"})
+CONFIRM_BEFORE = frozenset({"tache", "revue", "dossier_travail"})
+# Toujours confirmées par le code au moment d'écrire dans le dossier, quel que soit le chemin suivi.
+WRITE_ACTIONS = frozenset({"dossier_appliquer", "dossier_annuler"})
 
 
 def conversation_schema() -> dict:
@@ -204,10 +211,27 @@ numéro, suivi de « force » seulement s'il insiste pour l'approfondir malgré 
 - quota : combien de requêtes il reste. workers : quels agents travaillent. aide : ce que tu sais faire.
 - confidentialite : argument = local s'il veut que plus rien ne parte vers un service \
 externe ; externe s'il veut autoriser l'agent externe pour la session.
+- dossier : ouvrir et analyser un dossier de son ordinateur. argument = le chemin ou le nom \
+du dossier EXACTEMENT comme il l'a écrit (« C:\\Users\\Lea\\Desktop\\Projet », « Bureau/Projet », \
+« MonProjet »), vide s'il veut le choisir dans une fenêtre.
+- voir_dossier : revoir ce que contient le dossier ouvert.
+- dossier_question : une question sur le dossier ouvert ou ses fichiers. argument = la question complète.
+- dossier_travail : modifier ou créer des fichiers dans le dossier ouvert (corriger, compléter, \
+écrire, ranger le contenu...). argument = consigne complète et autonome. Rien n'est écrit sans \
+son accord : le programme lui montre d'abord les changements.
+- dossier_diff : voir en entier les modifications proposées.
+- dossier_appliquer : il accepte d'écrire les modifications proposées (le programme lui redemande).
+- dossier_annuler : revenir en arrière sur les dernières modifications écrites dans le dossier.
+- dossier_fermer : arrêter de travailler sur le dossier ouvert.
+Quand un dossier est ouvert, tout ce qui concerne ses fichiers relève des actions dossier_* ; \
+tache reste pour les idées et textes produits par les agents.
 
 Exemples : « je garde la 2, la 5 est trop chère » -> retour ; « approfondis la 2 » -> \
 escalader, argument 2 ; « pareil mais 20 » juste après une demande d'idées -> tache, avec 20 \
-idées ; « montre la 3 » -> detail, argument 3 ; « c'est quoi un relecteur ? » -> discussion.
+idées ; « montre la 3 » -> detail, argument 3 ; « c'est quoi un relecteur ? » -> discussion ; \
+« regarde le dossier MonAppli sur mon bureau » -> dossier, argument Bureau/MonAppli ; « à quoi sert \
+config.py ? » (dossier ouvert) -> dossier_question ; « corrige les fautes du README » (dossier \
+ouvert) -> dossier_travail ; « vas-y, applique » (modifications en attente) -> dossier_appliquer.
 
 Règles : pour toute action autre que discussion, reponse est vide. Ne prétends jamais avoir \
 fait quelque chose. Ne cite jamais de commande commençant par « / ». N'invente aucune \
@@ -237,7 +261,8 @@ class ConvProposal:
 
 def converse(llm: LocalLLM, message: str, *, history: str = "", state: str = "",
              profiles: Sequence[Tuple[str, str]] = (), exemples: str = "", n_outputs: int = 0,
-             idea_ids: Sequence[int] = ()) -> ConvProposal:
+             idea_ids: Sequence[int] = (), folder_open: bool = False, has_proposal: bool = False,
+             can_undo: bool = False) -> ConvProposal:
     """Le modèle propose, le code valide. Lève SchemaError / LocalLLMError en cas d'échec."""
     listing = "\n".join(f"- {n} : {d}" for n, d in profiles) or "- (aucun)"
     prompt = (_block("État du travail en cours", "ETAT", state)
@@ -246,13 +271,20 @@ def converse(llm: LocalLLM, message: str, *, history: str = "", state: str = "",
               + f"Nouveau message de l'utilisateur :\n<<<MESSAGE\n{message.strip()}\nMESSAGE>>>")
     doc, _ = llm.ask_json(prompt, conversation_schema(), system=CONVERSATION_SYSTEM.replace("{profils}", listing),
                           temperature=0.2)
-    return validate(doc, n_outputs=n_outputs, idea_ids=idea_ids)
+    return validate(doc, n_outputs=n_outputs, idea_ids=idea_ids, folder_open=folder_open,
+                    has_proposal=has_proposal, can_undo=can_undo)
 
 
-def validate(doc: dict, *, n_outputs: int = 0, idea_ids: Sequence[int] = ()) -> ConvProposal:
+NO_FOLDER = "Aucun dossier n'est ouvert : dis-moi lequel regarder (son chemin ou son nom), ou « choisis un dossier »."
+
+
+def validate(doc: dict, *, n_outputs: int = 0, idea_ids: Sequence[int] = (), folder_open: bool = False,
+             has_proposal: bool = False, can_undo: bool = False) -> ConvProposal:
     """Double contrôle du code sur la proposition du modèle (en plus du schéma)."""
     action = doc.get("action", "")
-    arg = " ".join(str(doc.get("argument", "")).split()) if action != "fiche" else str(doc.get("argument", "")).strip()
+    raw_arg = str(doc.get("argument", ""))
+    # Une fiche garde ses retours à la ligne ; un chemin de dossier ses espaces (« Mes  Projets »).
+    arg = raw_arg.strip() if action in ("fiche", "dossier") else " ".join(raw_arg.split())
     reply = str(doc.get("reponse", "")).strip()
     profile = str(doc.get("profil", "") or "").strip()
 
@@ -282,7 +314,17 @@ def validate(doc: dict, *, n_outputs: int = 0, idea_ids: Sequence[int] = ()) -> 
         arg = arg.lower()
         if arg not in ("local", "externe"):
             return ask("Tu veux que tout reste sur ton PC, ou autoriser l'agent externe ?")
-    keep = action in ("tache", "fiche", "detail", "escalader", "confidentialite")
+    if action in FOLDER_ACTIONS and not folder_open:
+        return ConvProposal("discussion", reply=NO_FOLDER)
+    if action in ("dossier_question", "dossier_travail") and not arg:
+        return ask("Qu'est-ce que tu veux savoir ou faire dans ce dossier ?")
+    if action in ("dossier_diff", "dossier_appliquer") and not has_proposal:
+        return ConvProposal("discussion", reply="Il n'y a pas de modification en attente : dis-moi ce qu'il faut "
+                                                "changer dans le dossier.")
+    if action == "dossier_annuler" and not can_undo:
+        return ConvProposal("discussion", reply="Il n'y a rien à annuler dans ce dossier.")
+    keep = action in ("tache", "fiche", "detail", "escalader", "confidentialite", "dossier", "dossier_question",
+                      "dossier_travail")
     return ConvProposal(action, arg if keep else "", "", profile if action in ("tache", "fiche") else "")
 
 
@@ -328,12 +370,22 @@ _NATURAL = (
     (r"/refuser (\d+)", lambda m: f"« je jette la {m.group(1)} »"),
     (r"/detail (\d+)", lambda m: f"« montre la sortie {m.group(1)} »"),
     (r"\(/profil seulement pour le forcer\)", lambda m: ""),
+    (r"/dossier relire", lambda m: "« relis le dossier »"),
+    (r"/dossier choisir", lambda m: "« choisis un dossier »"),
+    (r"\(/diff pour tout voir\)", lambda m: "(dis « montre tout le diff » pour tout voir)"),
+    (r"/appliquer pour les écrire, /diff pour tout voir\.",
+     lambda m: "Dis « applique » pour les écrire, ou « montre tout le diff »."),
+    (r"/appliquer pour le faire plus tard", lambda m: "Dis « applique » pour le faire plus tard"),
+    (r"/annuler pour revenir en arrière\.", lambda m: "Dis « annule » pour revenir en arrière."),
 )
 _NATURAL_RE = tuple((re.compile(p), f) for p, f in _NATURAL)
 _FALLBACK = {"/tache": "une demande d'idées", "/revue": "la notation des idées", "/dedup": "le regroupement des doublons",
              "/valider": "« je garde la … »", "/refuser": "« je jette la … »", "/resume": "« résume »",
              "/fiche": "la description de ton projet", "/escalader": "« approfondis la … »", "/aide": "« aide »",
-             "/profil": "« passe en profil … »", "/detail": "« montre la sortie … »"}
+             "/profil": "« passe en profil … »", "/detail": "« montre la sortie … »",
+             "/dossier": "« ouvre le dossier … »", "/question": "ta question sur le dossier",
+             "/travail": "ta demande de modification", "/diff": "« montre tout le diff »",
+             "/appliquer": "« applique »", "/annuler": "« annule »"}
 _FALLBACK_RE = re.compile(r"(?<![\w/])(" + "|".join(re.escape(k) for k in _FALLBACK) + r")\b(?: <[^>]*>)?")
 
 
@@ -351,7 +403,8 @@ def naturalize(text: str) -> str:
 BANNER = """\
 Salut ! Je suis ton assistant CheapWorkflow. Parle-moi normalement, comme à quelqu'un :
   « J'ai un projet d'appli pour… », « trouve-moi 10 idées sur… », « fais-les noter »,
-  « je garde la 2, la 4 est trop chère », « approfondis la 2 ».
+  « je garde la 2, la 4 est trop chère », « approfondis la 2 »,
+  « regarde le dossier MonProjet sur mon bureau » (je n'y modifie rien sans ton accord).
 Je te demande toujours ton accord avant un travail qui coûte quelque chose.
 Dis « aide » si tu es perdu, « au revoir » pour quitter."""
 
@@ -362,6 +415,10 @@ Voici comment on peut travailler ensemble, sans aucune commande :
   3. « regroupe les doublons », puis « fais-les noter » : trois relecteurs les notent.
   4. Donne ton avis (« je garde la 2 et la 5, la 1 est trop compliquée ») : je m'en souviens.
   5. « approfondis la 2 » : le grand modèle étudie l'idée en détail.
+Sur un dossier de ton PC : « regarde le dossier C:\\…\\MonProjet » (ou « choisis un dossier ») ; je
+  l'analyse sans rien toucher. Ensuite « à quoi sert ce fichier ? », « corrige les fautes du
+  README » : je te montre chaque changement et je n'écris qu'après ton « oui » (« annule » pour
+  revenir en arrière, « ferme le dossier » quand tu as fini).
 Tu peux aussi demander « montre la sortie 2 », « résume », « il me reste combien de quota ? »,
 « garde tout en local » (plus rien n'est envoyé dehors), ou « au revoir ».
 Quand je te demande « On y va ? », réponds « oui », « non », ou corrige-moi directement

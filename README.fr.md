@@ -1,6 +1,6 @@
 # AdaptiveWorkflow
 
-> **Version 3.0.0.** Testé sous Windows uniquement (V2). La logique est couverte par des tests unitaires qui n'ont besoin ni de réseau ni de modèle réel. La V3 (rôles sur Claude Haiku, un seul Qwen local) n'a **pas encore** été lancée avec des modèles réels. Lisez la [Feuille de route](#feuille-de-route) avant de vous y fier.
+> **Version 3.2.0.** Testé sous Windows uniquement (V2). La logique est couverte par des tests unitaires qui n'ont besoin ni de réseau ni de modèle réel. La V3 (rôles sur Claude Haiku, un seul Qwen local) n'a **pas encore** été lancée avec des modèles réels. Lisez la [Feuille de route](#feuille-de-route) avant de vous y fier.
 
 **Un workflow multi-agents pour le terminal.** Des agents IA (Claude Haiku, Gemini, un Qwen local via Ollama) travaillent ensemble, sous un code Python simple qui prend les décisions. **Depuis la V3, chaque rôle est confié par défaut à Claude Haiku** (Claude Code connecté à votre abonnement claude.ai : cela consomme le quota de l'abonnement, ce n'est pas gratuit), avec **un seul modèle Qwen local** en repli. Chaque rôle reste réaffectable (`AGENT_<ROLE>`, ou la clé `agents` d'un profil) à Gemini gratuit ou au Qwen local pour revenir à un coût nul.
 
@@ -112,6 +112,33 @@ Je confie ça aux agents (claude_haiku …) : « Propose 15 idées … » On y v
 
 Validé par tests unitaires avec doublures (scénario complet sans aucune commande compris) ; pas encore avec des modèles réels : lancez `pilot.bat`, dont le scénario par défaut est désormais une conversation (`pilot.bat --commandes` pour l'ancien parcours).
 
+### Travailler sur un dossier du PC
+
+Le workflow peut ouvrir un dossier de votre ordinateur, le comprendre, répondre à vos questions dessus et y travailler à votre demande. **Rien n'est jamais écrit dans le dossier sans votre « oui » explicite** à la question posée par le programme.
+
+```
+> regarde le dossier MonAppli sur mon bureau
+Je regarde le dossier C:\Users\vous\Desktop\MonAppli — lecture seule, rien n'y est modifié.
+42 fichier(s), 380 Ko … Sensibles, JAMAIS lus ni envoyés : 1 (.env). Nature probable : projet Python, dépôt git.
+Pour comprendre ce dossier, je vais envoyer à Claude (via ton abonnement) … D'accord pour l'envoyer ? (oui/non) oui
+Voici ce que je comprends du dossier : …
+> à quoi sert config.py ?
+> corrige les fautes du README et ajoute une section Installation
+Je prépare des modifications dans « MonAppli » … Rien ne sera écrit sans ton accord. On y va ? (oui/non) oui
+Modifications proposées (rien n'est encore écrit) : • README.md (+12 / -3 ligne(s)) … (diff)
+J'écris ces 1 modification(s) dans C:\…\MonAppli ? (une copie des fichiers d'origine est gardée pour pouvoir annuler) (oui/non) oui
+> finalement annule
+> ferme le dossier
+```
+
+- **Choisir le dossier** : chemin complet, chemin relatif au dossier personnel, au Bureau ou aux Documents (« Bureau/MonAppli »), simple nom (cherché près du dossier personnel ; s'il y en a plusieurs, le programme demande lequel), ou « choisis un dossier » / `/dossier choisir`, qui ouvre la fenêtre de choix de Windows. Les racines de disque, le dossier personnel entier et les dossiers système sont refusés.
+- **Lecture seule, par le code.** L'inventaire (types, tailles, nature du projet) est fait par le code. Les dossiers techniques (`.git`, `node_modules`…) et les motifs simples du `.gitignore` sont ignorés, les liens symboliques ne sont jamais suivis, et les **fichiers sensibles** (`.env`, clés privées, identifiants, bases de données…) sont listés mais **jamais lus ni envoyés**. Le texte des documents Word, PowerPoint, Excel et OpenDocument est extrait (PDF avec `pypdf` s'il est installé) ; ils ne sont jamais modifiés. Les dossiers `state/` et `logs/` du programme sont exclus, même si vous ouvrez le projet lui-même.
+- **Accord dédié.** Le rôle `dossier` (Claude Haiku par défaut, Qwen local en repli) reçoit la liste des fichiers et le contenu des principaux, dans la limite de `DOSSIER_BUDGET_CARACTERES` par demande, masqué et contrôlé contre les fuites. Avant le premier envoi, le programme demande votre accord **pour ce dossier** (l'accord de conversation ne le couvre pas) et signale les données personnelles repérées. Refus, profil « données personnelles », `AGENT_DOSSIER=qwen` ou agent externe indisponible : tout est traité sur le PC, **conversation comprise**, jusqu'à la fermeture du dossier. L'historique de conversation ne reçoit que le nom du dossier et des noms de fichiers, jamais leur contenu.
+- **Modifications vérifiées par le code.** Le modèle propose ; le code n'accepte que des chemins dans le dossier, jamais sensibles ni techniques, ne modifie un fichier existant que s'il a été lu pour cette demande (« remplacer » : extrait présent une seule fois ; « réécrire » : fichier montré en entier), refuse suppressions, renommages, binaires et documents, et montre le diff. Le diff complet et les fichiers proposés sont aussi gardés dans `state/dossiers/`.
+- **Écriture.** Après votre « oui » seulement : chaque fichier doit être identique à ce qui a été lu (sinon rien n'est écrit), les originaux sont sauvegardés dans `state/dossiers/<dossier>/sauvegardes/`, l'écriture est atomique avec le même encodage et les mêmes fins de ligne (CRLF compris), et un échec en cours de route remet le dossier dans son état d'origine. « annule » (`/annuler`) restaure la dernière modification, sans écraser un fichier retouché depuis.
+
+Commandes équivalentes : `/dossier <chemin>`, `/dossier choisir`, `/dossier` (voir), `/dossier relire`, `/dossier fermer`, `/question <question>`, `/travail <consigne>`, `/diff`, `/appliquer`, `/annuler`. Détails : [docs/dossier.md](docs/dossier.md). Validé par tests unitaires avec doublures (dont un contrôle octet par octet que le dossier reste identique) ; pas encore avec des modèles réels.
+
 ### Mode langage libre (`MODE_CONVERSATION=0`)
 
 Ancien mode, conservé : sans `/` en début de ligne, le message est reformulé puis une commande vous est proposée.
@@ -149,6 +176,12 @@ Appels avec les défauts V3 (chaque rôle sur Claude Haiku) ; un rôle réaffect
 | `/workers` | liste la liste fermée des workers | 0 |
 | `/quota` | requêtes Gemini utilisées aujourd'hui et restantes, appels Claude du jour | 0 |
 | `/quitter` | quitte | 0 |
+| `/dossier <chemin>` | ouvre un dossier du PC (lecture seule), l'inventorie et le fait analyser ; `/dossier choisir` ouvre la fenêtre de choix, `/dossier` l'affiche, `/dossier relire`, `/dossier fermer` | 1 (après l'accord dédié au dossier) |
+| `/question <question>` | répond à une question sur le dossier ouvert | 1 ou 2 |
+| `/travail <consigne>` | propose des modifications dans le dossier ouvert, montre le diff et demande avant d'écrire | 1 ou 2 |
+| `/diff` | diff complet des modifications proposées | 0 |
+| `/appliquer` | écrit les modifications proposées, après confirmation (originaux sauvegardés) | 0 |
+| `/annuler` | remet les fichiers comme avant la dernière modification écrite, après confirmation | 0 |
 
 Alias : `/task`, `/tâche`, `/help`, `/org`, `/review`, `/doublons`, `/détail`, `/résumé`, `/q`, `/exit`, `/quit`.
 
@@ -156,7 +189,7 @@ En mode conversation, tout le parcours se fait sans commande, `escalader` compri
 
 ## Agents interchangeables
 
-Chaque rôle du workflow est confié à un agent, par défaut ou par `.env` ou par un profil, sans modifier le code (`agents.py`). Les rôles sont `organisateur`, `worker`, `relecteur`, `grand_modele`, `interface`, `cadrage`, `routage`, `promesse`, `format`, `dedup`, `reparation`, `reformulation`.
+Chaque rôle du workflow est confié à un agent, par défaut ou par `.env` ou par un profil, sans modifier le code (`agents.py`). Les rôles sont `organisateur`, `worker`, `relecteur`, `grand_modele`, `interface`, `cadrage`, `routage`, `promesse`, `format`, `dedup`, `reparation`, `reformulation`, `dossier` (V3.2 : travail sur un dossier du PC, accord dédié).
 
 **Défauts V3 :** chaque rôle → `claude_haiku` (Claude Code, modèle `CLAUDE_HAIKU_MODEL`, alias `haiku` par défaut), puis repli sur `qwen` (le modèle local unique). Pour changer :
 
@@ -265,10 +298,11 @@ escalation.py        contrat, grand modèle, contrôles
 verify/              schéma JSON, réparation, contrôle de promesse ; haiku.py (vérification par Claude Haiku, désactivée)
 privacy/             détection, masquage, contrôle de fuite, coffre chiffré, politique des fournisseurs
 profiles/            un dossier par cas d'usage ; loader.py les valide
-qwen_ui/             terminal : app.py, conversation.py, router.py, langage_libre.py, fiche.py, presenter.py, bootstrap.py
+qwen_ui/             terminal : app.py, conversation.py, dossier_app.py, router.py, langage_libre.py, fiche.py, presenter.py, bootstrap.py
+dossier/             dossier du PC : inventaire en lecture seule, analyse, modifications vérifiées, application et annulation
 pilot.py             rejoue un scénario sans saisie et mesure
 calibrate.py         suggestions de seuils à partir de vos runs (lecture seule)
-tests/               20 modules de tests, aucun réseau ni modèle réel requis (garde-fou dans tests/__init__.py)
+tests/               21 modules de tests, aucun réseau ni modèle réel requis (garde-fou dans tests/__init__.py)
 docs/                documentation détaillée (en anglais)
 README.md, README.fr.md, CHANGELOG.md, GUIDE_PROMPTS_QWEN_V1.md (comment rédiger fiches et consignes), LICENSE
 requirements.txt     dépendances facultatives (tzdata ; spaCy et cryptography sont facultatifs)
@@ -286,13 +320,14 @@ Le parcours d'une demande, les journaux et les quotas sont décrits dans [docs/a
 python -m unittest discover -s tests -t .
 ```
 
-Ou `tests.bat`, qui écrit le résultat dans `logs\tests.txt`. La suite compte environ 525 fonctions de test (`def test_`) réparties dans 20 modules. Elle n'a besoin ni de réseau ni de modèle réel : Ollama, Gemini et Claude sont remplacés par des doublures, et `tests/__init__.py` empêche tout appel réel à Claude Code ou à Ollama même si un test oubliait un double. Des tests qui passent montrent la logique avec des doublures ; ils ne mesurent pas le comportement des modèles réels.
+Ou `tests.bat`, qui écrit le résultat dans `logs\tests.txt`. La suite compte environ 575 fonctions de test (`def test_`) réparties dans 21 modules. Elle n'a besoin ni de réseau ni de modèle réel : Ollama, Gemini et Claude sont remplacés par des doublures, et `tests/__init__.py` empêche tout appel réel à Claude Code ou à Ollama même si un test oubliait un double. Des tests qui passent montrent la logique avec des doublures ; ils ne mesurent pas le comportement des modèles réels.
 
 ## Limites connues
 
 - Seul Windows est validé.
 - Les agents interchangeables et le mode langage libre sont validés par tests unitaires avec doublures. Le seul run avec des modèles réels est celui de la V2 documenté dans [docs/auto_projet.md](docs/auto_projet.md) ; il est anecdotique, ce n'est pas un benchmark. Les défauts V3 (Claude Haiku partout, `qwen3.5:9b-q4_K_M`) n'ont pas encore tourné en réel : qualité des réponses de Haiku sur les schémas JSON, durée par appel de `claude -p` et consommation du quota sont à mesurer.
 - Le mode conversation n'a pas encore tourné avec des modèles réels : la qualité de compréhension (surtout par le Qwen local 9B quand l'accord est refusé) et la pertinence des consignes construites à partir de l'historique sont à observer.
+- Le travail sur un dossier n'a pas encore tourné avec des modèles réels : la qualité des propositions de Claude Haiku (extraits « remplacer » recopiés exactement) et la place que prend un gros dossier dans le contexte du Qwen local (`DOSSIER_BUDGET_CARACTERES`) sont à observer. Le `.gitignore` n'est lu qu'à la racine, sans les négations « ! ».
 - Les seuils ne sont pas calibrés.
 - Le détecteur de données personnelles est resserré mais heuristique (voir plus haut) : faux positifs possibles (un nom de marque en « Mot MAJUSCULES » fait basculer en local), faux négatifs possibles (nom en minuscules non déclaré).
 - Chaque envoi externe déclenche d'abord, en local, le repérage des indices indirects par Qwen (masquage) ; sans Ollama, ce repérage est sauté avec un avertissement.
@@ -319,6 +354,7 @@ La V1 était volontairement limitée. État des versions suivantes :
   - [x] Clé Gemini et Ollama facultatifs au démarrage.
   - [ ] Run réel de la V3 et mesure (durée, quota Claude, validité JSON).
   - [x] Mode conversation : parler à l'assistant sans aucune commande (3.1.0). Tests unitaires et doublures uniquement.
+  - [x] Travailler sur un dossier du PC : choix, analyse en lecture seule, questions, modifications écrites seulement après « oui », sauvegarde et annulation (3.2.0). Tests unitaires et doublures uniquement.
 
 ## Note légale sur les profils
 

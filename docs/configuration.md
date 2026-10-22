@@ -71,6 +71,9 @@ Model names must match `ollama list`. If the model is missing, a startup warning
 |---|---|---|
 | `FEEDBACK_EXEMPLES` | `5` | Number of recent feedback decisions given to Qwen as examples. `0` disables them. Never used in a personal-data profile. |
 | `PROFIL_DONNEES_PERSO` | `bureautique_fictive` | Restrictive profile the code switches to when personal data is detected in free text |
+| `DOSSIER_BUDGET_CARACTERES` | `24000` | File content sent at most per call of the `dossier` role (folder work, V3.2). Keep it under the local Qwen context. |
+| `DOSSIER_MAX_FICHIERS` | `5000` | Files walked at most when a folder is opened (beyond: partial inventory). |
+| `DOSSIER_MAX_OCTETS_FICHIER` | `300000` | Text files larger than this are listed, never read nor changed. |
 | `MODE_CONVERSATION` | `1` | Conversation mode: talk to the assistant without any command (history in memory, natural confirmations). `0` restores the free-language mode where a command is proposed. |
 
 ## Agents
@@ -83,7 +86,7 @@ Model names must match `ollama list`. If the model is missing, a startup warning
 | `AGENT_SEUIL_SCORE` | `5` | Complexity score from which a task is hard, when a score is given |
 | `AGENT_DECLARATIONS` | empty | Extra agents, as a JSON object `{"name": {"fournisseur": ..., "modele": ...}}` |
 
-Roles (`<ROLE>` in upper case): `ORGANISATEUR`, `WORKER`, `RELECTEUR`, `GRAND_MODELE`, `INTERFACE`, `CADRAGE`, `ROUTAGE`, `PROMESSE`, `FORMAT`, `DEDUP`, `REPARATION`, `REFORMULATION`. Defaults (V3): every role uses `claude_haiku`, then `qwen` as fallback. Examples: `AGENT_REFORMULATION=qwen`, `AGENT_WORKER=gemini,qwen`, `AGENT_DEDUP=qwen`. Zero-cost setup: assign the generation roles to `gemini,qwen` and the other roles to `qwen`. Any role sent to Gemini or Claude is an external send; see [agents.md](agents.md).
+Roles (`<ROLE>` in upper case): `ORGANISATEUR`, `WORKER`, `RELECTEUR`, `GRAND_MODELE`, `INTERFACE`, `CADRAGE`, `ROUTAGE`, `PROMESSE`, `FORMAT`, `DEDUP`, `REPARATION`, `REFORMULATION`, `DOSSIER`. Defaults (V3): every role uses `claude_haiku`, then `qwen` as fallback. Examples: `AGENT_REFORMULATION=qwen`, `AGENT_WORKER=gemini,qwen`, `AGENT_DEDUP=qwen`. Zero-cost setup: assign the generation roles to `gemini,qwen` and the other roles to `qwen`. Any role sent to Gemini or Claude is an external send; see [agents.md](agents.md).
 
 ## Set at runtime (not in `.env`)
 

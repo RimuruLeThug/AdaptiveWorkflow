@@ -33,6 +33,8 @@ from local_llm import LocalLLM, LocalLLMError, OllamaBackend
 from orchestrator import Orchestrator, RunLogger
 from organizers.gemini import GeminiOrganizer
 from qwen_ui.app import YES, App
+from qwen_ui.dossier_app import tk_folder_picker
+from dossier.inventaire import Limites
 from qwen_ui.langage_libre import FeedbackJournal, LangageLibre, Reformulator
 from rate_limiter import RateLimiter
 from review import ReviewPanel
@@ -186,7 +188,9 @@ def build_components(
     def personal_data() -> bool:
         prof = current_profile()
         # Donnée personnelle détectée dans le texte libre : verrou de session, même sans profil restrictif.
-        return bool(prof and prof.personal_data) or bool(app_box and app_box[0].personal_lock)
+        # Accord refusé pour le dossier ouvert (V3.2) : tout reste local jusqu'à sa fermeture.
+        return (bool(prof and prof.personal_data)
+                or bool(app_box and (app_box[0].personal_lock or app_box[0].dossier_local)))
 
     def declared() -> List[str]:
         prof = current_profile()
@@ -289,8 +293,11 @@ def build_components(
         profile=profile, profile_loader=load_profile, profile_names=list_profiles,
         masker_factory=shared_masker, organizer="agents", workers_provider="agents", reviewers_provider="agents",
         role_label=role_label, role_uses_gemini=role_uses_gemini,
-        role_llms={role: RoleLLM(router, role) for role in ("interface", "cadrage", "routage")},
-        conversation=s.mode_conversation)
+        role_llms={role: RoleLLM(router, role) for role in ("interface", "cadrage", "routage", "dossier")},
+        conversation=s.mode_conversation, folder_picker=tk_folder_picker,
+        dossier_limites=Limites(max_fichiers=s.dossier_max_fichiers, max_octets_fichier=s.dossier_max_octets_fichier,
+                                budget_caracteres=s.dossier_budget_caracteres),
+        protected=(s.state_dir, s.logs_dir))
     app_kwargs["langage_libre"] = LangageLibre(
         Reformulator(router, llm), FeedbackJournal((app_state_dir or s.state_dir) / "retours.jsonl"),
         n_exemples=s.feedback_exemples, profil_perso=s.profil_donnees_perso, producteur=routes["worker"].agent)

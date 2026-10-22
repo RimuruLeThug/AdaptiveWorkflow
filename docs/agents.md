@@ -20,6 +20,7 @@ Defined in `agents.py` (`ROLES`). Since V3, **every role's default agent is `cla
 | `dedup` | deduplication of ideas | `claude_haiku`, then `qwen` | yes |
 | `reparation` | repair of invalid JSON | `claude_haiku`, then `qwen` | yes |
 | `reformulation` | rewrites free text into a clear request | `claude_haiku`, then `qwen` | yes |
+| `dossier` | understands a folder of the PC, answers about it, proposes changes (V3.2) | `claude_haiku`, then `qwen` | yes, dedicated consent per folder (never covered by the session consent) |
 
 "Free text" roles may carry text you typed: an external send needs your confirmation (masked preview, recipient named) or a session consent. The session consent is asked once, at the first free-text message, for one provider; it covers every free-text role assigned to that provider (`/accord oui|non` grants or revokes it). It is never available for the four generation roles (they are only masked and leak-checked) nor in a personal-data session.
 

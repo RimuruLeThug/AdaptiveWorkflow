@@ -1,6 +1,6 @@
 # AdaptiveWorkflow
 
-> **Version 3.0.0.** Tested on Windows only (V2). The logic is covered by unit tests that need no network and no real model. V3 (roles on Claude Haiku, a single local Qwen) has **not** been run with real models yet. Read the [Roadmap](#roadmap) before relying on it.
+> **Version 3.2.0.** Tested on Windows only (V2). The logic is covered by unit tests that need no network and no real model. V3 (roles on Claude Haiku, a single local Qwen) has **not** been run with real models yet. Read the [Roadmap](#roadmap) before relying on it.
 
 **A multi-agent workflow for the terminal.** AI agents (Claude Haiku, Gemini, a local Qwen through Ollama) work together under plain Python code that makes the decisions. **Since V3, every role is assigned to Claude Haiku by default** (Claude Code logged in with your claude.ai subscription: it consumes the subscription quota, it is not free), with **a single local Qwen model** as fallback. Every role can still be reassigned (`AGENT_<ROLE>`, or the `agents` key of a profile) to free Gemini or the local Qwen to get back to zero cost.
 
@@ -99,6 +99,30 @@ You write as you would to a person (in French); the assistant understands the in
 
 Validated with unit tests and doubles (including a full scenario without any command); not yet with real models: run `pilot.bat`, whose default scenario is now a conversation (`pilot.bat --commandes` for the old path).
 
+### Working on a folder of your PC
+
+The workflow can open a folder of your computer, understand it, answer questions about it and work on it when you ask. **Nothing is ever written to the folder without your explicit "oui"** to the question asked by the program.
+
+```
+> regarde le dossier MonAppli sur mon bureau
+Je regarde le dossier C:\Users\you\Desktop\MonAppli — lecture seule, rien n'y est modifié.
+… D'accord pour l'envoyer ? (oui/non) oui
+Voici ce que je comprends du dossier : …
+> corrige les fautes du README
+… On y va ? (oui/non) oui
+Modifications proposées (rien n'est encore écrit) : • README.md (+3 / -3 ligne(s)) … (diff)
+J'écris ces 1 modification(s) dans C:\…\MonAppli ? … (oui/non) oui
+> finalement annule
+```
+
+- **Choosing the folder**: full path, path relative to the home, Desktop or Documents folder ("Bureau/MonAppli"), a plain name (searched near the home folder; the program asks which one if several match), or "choisis un dossier" / `/dossier choisir`, which opens the Windows folder picker. Drive roots, the whole home folder and system folders are refused.
+- **Read-only, by code.** The inventory (types, sizes, project kind) is made by code. Technical folders (`.git`, `node_modules`…) and simple `.gitignore` patterns are skipped, symbolic links are never followed, and **sensitive files** (`.env`, private keys, credentials, databases…) are listed but **never read nor sent**. Text is extracted from Word, PowerPoint, Excel and OpenDocument files (PDF with `pypdf` if installed); they are never modified. The program's own `state/` and `logs/` folders are excluded, even when you open the project itself.
+- **Dedicated consent.** The `dossier` role (Claude Haiku by default, local Qwen fallback) receives the file list and the content of the main files, up to `DOSSIER_BUDGET_CARACTERES` per request, masked and leak-checked. Before the first send, the program asks for your consent **for this folder** (the conversation consent does not cover it) and reports detected personal data. Refused, personal-data profile, `AGENT_DOSSIER=qwen` or external agent unavailable: everything is processed on the PC, **conversation included**, until the folder is closed. The conversation history only gets the folder name and file names, never their content.
+- **Changes checked by code.** The model proposes; the code only accepts paths inside the folder, never sensitive or technical ones, modifies an existing file only if it was read for this request ("remplacer": excerpt present exactly once; "reecrire": file shown in full), refuses deletions, renames, binaries and documents, and shows the diff. The full diff and proposed files are also kept in `state/dossiers/`.
+- **Writing.** Only after your "oui": each file must be identical to what was read (otherwise nothing is written), originals are backed up in `state/dossiers/<folder>/sauvegardes/`, writes are atomic with the same encoding and line endings (CRLF included), and a failure halfway restores the folder. "annule" (`/annuler`) restores the last change, without overwriting a file edited since.
+
+Equivalent commands: `/dossier <path>`, `/dossier choisir`, `/dossier` (show), `/dossier relire`, `/dossier fermer`, `/question <question>`, `/travail <instruction>`, `/diff`, `/appliquer`, `/annuler`. Details: [docs/dossier.md](docs/dossier.md). Validated by unit tests with doubles (including a byte-for-byte check that the folder stays unchanged); not yet with real models.
+
 ### Free-language mode (`MODE_CONVERSATION=0`)
 
 Previous mode, kept: without a leading `/`, the message is rephrased and a command is proposed.
@@ -136,6 +160,12 @@ Calls with the V3 defaults (every role on Claude Haiku); a role reassigned to Ge
 | `/workers` | list the closed list of workers | 0 |
 | `/quota` | Gemini requests used today and remaining, Claude calls of the day | 0 |
 | `/quitter` | quit | 0 |
+| `/dossier <path>` | opens a folder of your PC (read-only), inventories it and has it analysed; `/dossier choisir` opens the folder picker, `/dossier` shows it, `/dossier relire`, `/dossier fermer` | 1 (after the folder's dedicated consent) |
+| `/question <question>` | answers a question about the open folder | 1 or 2 |
+| `/travail <instruction>` | proposes changes in the open folder, shows the diff and asks before writing | 1 or 2 |
+| `/diff` | full diff of the proposed changes | 0 |
+| `/appliquer` | writes the proposed changes, after confirmation (originals backed up) | 0 |
+| `/annuler` | restores the files as before the last written change, after confirmation | 0 |
 
 Aliases: `/task`, `/tâche`, `/help`, `/org`, `/review`, `/doublons`, `/détail`, `/résumé`, `/q`, `/exit`, `/quit`.
 
@@ -143,7 +173,7 @@ Without a leading `/`, the commands above can also be requested in free language
 
 ## Swappable agents
 
-Each role of the workflow is assigned to an agent, by default, by `.env` or by a profile, without changing the code (`agents.py`). The roles are `organisateur`, `worker`, `relecteur`, `grand_modele`, `interface`, `cadrage`, `routage`, `promesse`, `format`, `dedup`, `reparation`, `reformulation`.
+Each role of the workflow is assigned to an agent, by default, by `.env` or by a profile, without changing the code (`agents.py`). The roles are `organisateur`, `worker`, `relecteur`, `grand_modele`, `interface`, `cadrage`, `routage`, `promesse`, `format`, `dedup`, `reparation`, `reformulation`, `dossier` (V3.2: work on a folder of your PC, dedicated consent).
 
 **V3 defaults:** every role → `claude_haiku` (Claude Code, model `CLAUDE_HAIKU_MODEL`, alias `haiku` by default), then fallback to `qwen` (the single local model). To change it:
 
@@ -252,10 +282,11 @@ escalation.py        contract, big model, checks
 verify/              JSON schema, repair, promise check; haiku.py (verification by Claude Haiku, disabled)
 privacy/             detection, masking, leak check, encrypted vault, provider policy
 profiles/            one folder per use case, loader.py validates them
-qwen_ui/             terminal: app.py, router.py, langage_libre.py, fiche.py, presenter.py, bootstrap.py
+qwen_ui/             terminal: app.py, conversation.py, dossier_app.py, router.py, langage_libre.py, fiche.py, presenter.py, bootstrap.py
+dossier/             folder of your PC: read-only inventory, analysis, checked changes, apply and undo
 pilot.py             replays a scenario without input and measures it
 calibrate.py         threshold suggestions from your own runs (read-only)
-tests/               19 test modules, no network and no real model required (guard in tests/__init__.py)
+tests/               21 test modules, no network and no real model required (guard in tests/__init__.py)
 docs/                detailed documentation (English)
 README.md, README.fr.md, CHANGELOG.md, GUIDE_PROMPTS_QWEN_V1.md (how to write sheets and instructions, in French), LICENSE
 requirements.txt     optional dependencies (tzdata; spaCy and cryptography are optional)
@@ -273,12 +304,13 @@ The request flow, the journals and the quotas are described in [docs/architectur
 python -m unittest discover -s tests -t .
 ```
 
-Or `tests.bat`, which writes the output to `logs\tests.txt`. The suite has about 490 test functions (`def test_`) in 19 modules. It needs no network and no real model: Ollama, Gemini and Claude are replaced by test doubles, and `tests/__init__.py` prevents any real call to Claude Code or Ollama even if a test forgot a double. Passing tests show the logic with doubles; they do not measure real model behaviour.
+Or `tests.bat`, which writes the output to `logs\tests.txt`. The suite has about 575 test functions (`def test_`) in 21 modules. It needs no network and no real model: Ollama, Gemini and Claude are replaced by test doubles, and `tests/__init__.py` prevents any real call to Claude Code or Ollama even if a test forgot a double. Passing tests show the logic with doubles; they do not measure real model behaviour.
 
 ## Known limits
 
 - Only Windows is validated.
 - Swappable agents and free-language mode are validated by unit tests with doubles. The only real-model run is the V2 one documented in [docs/auto_projet.md](docs/auto_projet.md); it is anecdotal, not a benchmark. The V3 defaults (Claude Haiku everywhere, `qwen3.5:9b-q4_K_M`) have not run for real yet: Haiku's JSON quality, the duration of each `claude -p` call and the quota use are still to be measured.
+- Folder work has not run with real models yet: the quality of Claude Haiku's proposals ("remplacer" excerpts copied exactly) and how much of the local Qwen context a large folder takes (`DOSSIER_BUDGET_CARACTERES`) are still to be observed. Only the root `.gitignore` is read, without "!" negations.
 - Thresholds are not calibrated.
 - The personal-data detector is tightened but heuristic (see above): false positives are possible (a brand name written "Word UPPERCASE" switches to local), and so are false negatives (an undeclared lower-case name).
 - Every external send first runs, locally, Qwen's indirect-clue detection (masking); without Ollama this step is skipped with a warning.
@@ -303,7 +335,9 @@ V1 was deliberately limited. Status of the following versions:
   - [x] Personal-data profiles: automatic local Qwen fallback instead of a refusal.
   - [x] Tightened personal-data detector.
   - [x] Gemini key and Ollama optional at startup.
-  - [ ] Real V3 run and measurements (duration, Claude quota, JSON validity).
+  - [x] Real V3 run (3.1.0): conversation scenario run end to end on Windows with Claude Haiku.
+  - [x] Conversation mode: talk to the assistant without any command (3.1.0). Unit tests and doubles, one real run.
+  - [x] Work on a folder of your PC: choice, read-only analysis, questions, changes written only after "oui", backup and undo (3.2.0). Unit tests and doubles only.
 
 ## Legal note on profiles
 
