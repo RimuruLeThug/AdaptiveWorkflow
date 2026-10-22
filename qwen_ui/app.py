@@ -1,4 +1,4 @@
-"""Terminal de l'interface Qwen 3.5 4B.
+"""Terminal de l'interface (V3 : rôles sur Claude Haiku par défaut, Qwen local en repli).
 
 Commandes explicites « /nom » (inchangées) ; texte libre : mode à commandes proposées
 (sans langage_libre) ou langage libre (qwen_ui/langage_libre.py : reformulation sous
@@ -36,19 +36,20 @@ from escalation import (Complexity, EscalationResult, Escalator, build_contract,
                         render_contract, render_escalation)
 
 PROVIDERS = {
+    "agents": "agents des rôles (défaut : Claude Haiku via Claude Code, repli Qwen local ; voir AGENT_<ROLE>)",
     "gemini": "Gemini Flash-Lite (niveau gratuit, quota commun)",
     "claude": "Claude via Claude Code (consomme le quota de ton abonnement Pro)",
 }
 ORGANIZERS = PROVIDERS  # même choix pour l'organisateur et le grand modèle
 
 BANNER = """\
-Orchestrateur multi-agents — interface locale (Qwen)
-Tapez /aide pour la liste des commandes. Le texte libre est analysé par Qwen,
-qui propose une commande : rien n'est envoyé à Gemini sans votre confirmation."""
+Orchestrateur multi-agents
+Tapez /aide pour la liste des commandes. Le texte libre est analysé par l'agent de
+routage, qui propose une commande : rien n'est envoyé à un agent externe sans votre confirmation."""
 
 BANNER_LIBRE = """\
-Orchestrateur multi-agents — interface locale (Qwen)
-Parlez librement : votre message est reformulé puis Qwen propose l'action ; le code la
+Orchestrateur multi-agents
+Parlez librement : votre message est reformulé puis l'agent de routage propose l'action ; le code la
 valide et demande confirmation avant tout travail coûteux. Le profil est choisi
 automatiquement (/profil reste disponible). Rien ne part vers un agent externe sans
 votre accord. /aide pour les commandes."""
@@ -79,17 +80,29 @@ class App:
         masker_factory: Optional[Callable[[], Masker]] = None,
         role_llms: Optional[Mapping[str, LocalLLM]] = None,
         langage_libre: Optional[LangageLibre] = None,
+        organizer: str = "gemini",
+        workers_provider: str = "gemini",
+        reviewers_provider: str = "gemini",
+        role_label: Optional[Callable[[str], str]] = None,
+        role_uses_gemini: Optional[Callable[[str], bool]] = None,
     ) -> None:
         self.llm = llm
         # Agents interchangeables (agents.py) : modèle par rôle ; rôle absent = llm, comme avant.
         self._role_llms = dict(role_llms or {})
-        self.format_llm = format_llm  # Qwen 2.5 3B : déduplication
+        self.format_llm = format_llm  # agent du rôle « dedup » (Qwen local hors assemblage)
         self._factory = orchestrator_factory
         self._quota_info = quota_info  # () -> (utilisées, limite)
         self._fiche_path = Path(state_dir) / "fiche_projet.json"
         self._in = input_fn
         self._out = output_fn
-        self.organizer = "gemini"
+        # « agents » (V3) : organisateur, workers, relecteurs et grand modèle passent par les rôles
+        # (agents.py), qui appliquent eux-mêmes la politique de données ; « gemini » / « claude » :
+        # client direct choisi par /organisateur ou /grand.
+        self.organizer = organizer if organizer in PROVIDERS else "gemini"
+        self._workers_provider = workers_provider
+        self._reviewers_provider = reviewers_provider
+        self._role_label = role_label or (lambda role: "Qwen (local, 0 requête Gemini)")
+        self._role_uses_gemini = role_uses_gemini or (lambda role: True)
         self.fiche: Optional[FicheProjet] = load_fiche(self._fiche_path)
         self.last_report: Optional[RunReport] = None
         self.last_dedup: Optional[DedupResult] = None
@@ -98,7 +111,7 @@ class App:
         self._escalator_factory = escalator_factory
         self._claude_check = claude_check
         self._claude_calls = claude_calls
-        self.big_model = big_model if big_model in PROVIDERS else "gemini"
+        self.big_model = big_model if big_model in PROVIDERS else ("agents" if not big_model else "gemini")
         self.complexity_threshold = complexity_threshold
         self.last_escalation: Optional[EscalationResult] = None
         self._decisions_path = Path(state_dir) / "decisions.jsonl"
@@ -155,7 +168,8 @@ class App:
         except LocalLLMError as exc:
             self._out(f"Modèle local indisponible : {exc}")
         except SchemaError as exc:
-            self._out(f"Qwen a renvoyé une réponse mal formée ({exc}). Réessayez ou utilisez une commande explicite.")
+            self._out(f"Le modèle a renvoyé une réponse mal formée ({exc}). Réessayez ou utilisez une commande "
+                      "explicite.")
         except PolicyError as exc:
             self._out(f"Refusé par la politique de données : {exc}")
         except ProfileError as exc:
@@ -409,11 +423,11 @@ class App:
         width = max(len(n) for n in COMMANDS)
         self._out("Commandes :\n" + "\n".join(f"  /{n.ljust(width)}  {d}" for n, d in COMMANDS.items()))
         if self._ll is None:
-            self._out("Sans « / », Qwen analyse votre message et propose une commande à confirmer.")
+            self._out("Sans « / », l'agent de routage analyse votre message et propose une commande à confirmer.")
             return
         self._out("Sans « / », parlez librement : « fais-moi 10 idées de … », « regroupe les doublons », "
                   "« fais noter les idées », « je garde la 2, trop générique la 1 ». Votre message est reformulé, "
-                  "Qwen propose l'action et le code confirme avec vous tout travail coûteux.\n"
+                  "l'agent de routage propose l'action et le code confirme avec vous tout travail coûteux.\n"
                   "Le profil est choisi automatiquement (/profil seulement pour le forcer). Une donnée "
                   "personnelle détectée impose le profil restrictif : aucun envoi externe.\n"
                   + self._ll.reformulator.describe())
@@ -431,7 +445,7 @@ class App:
             self._fiche_path.unlink(missing_ok=True)
             self._out("Fiche effacée.")
             return
-        self._out("Cadrage par Qwen (local, 0 requête Gemini)…")
+        self._out(f"Cadrage par {self._role_label('cadrage')}…")
         fiche = cadrer(self._llm("cadrage"), arg, self._exemples())
         self._out(fiche.render())
         if self._confirm("Valider cette fiche ?"):
@@ -450,6 +464,8 @@ class App:
         if name not in PROVIDERS:
             self._out(f"Choix inconnu : {name}. Possibles : {', '.join(PROVIDERS)}")
             return None
+        if name == "agents":
+            return name
         if name == "claude":
             if self._claude_check is None:
                 self._out("Claude non configuré.")
@@ -482,25 +498,40 @@ class App:
         return self._orch
 
     def _check_policy(self, *providers: str) -> None:
-        """Profil « données personnelles » : aucun fournisseur externe sans accord de traitement."""
+        """Profil « données personnelles » : aucun fournisseur externe sans accord de traitement.
+
+        « agents » : les rôles appliquent eux-mêmes la politique (agents externes écartés,
+        traitement par le Qwen local), il n'y a rien à refuser ici."""
         personal = self._personal()
         for p in providers:
-            check_provider(p, personal_data=personal)
+            if p != "agents":
+                check_provider(p, personal_data=personal)
+
+    def _gemini_used(self, provider: str, *roles: str) -> bool:
+        """Vrai si ce travail consomme le quota Gemini (client direct, ou un rôle confié à Gemini)."""
+        if provider == "gemini":
+            return True
+        return provider == "agents" and any(self._role_uses_gemini(r) for r in roles)
 
     def _cmd_tache(self, arg: str) -> None:
         if not arg:
             self._out("Usage : /tache <consigne>")
             return
-        self._check_policy(self.organizer, "gemini")  # organisateur + workers
+        self._check_policy(self.organizer, self._workers_provider)  # organisateur + workers
         orch = self._orchestrator()
         used, limit = self._quota_info()
         max_requests = orch.max_plan_attempts + orch.delegation_budget + 1  # plans + délégations + synthèse
-        if limit - used < max_requests:
+        gemini = (self._gemini_used(self.organizer, "organisateur")
+                  or self._gemini_used(self._workers_provider, "worker"))
+        if gemini and limit - used < max_requests:
             self._out(f"Attention : il reste {limit - used} requêtes Gemini aujourd'hui ; un run peut en utiliser "
                       f"jusqu'à {max_requests} hors retries.")
         if not self.fiche:
             self._out("(Aucune fiche projet : les agents ne recevront que la consigne. /fiche pour cadrer.)")
-        self._out(f"Envoi à l'organisateur {self.organizer}… (requêtes espacées de 5 s)")
+        if self.organizer == "agents":
+            self._out(f"Envoi à l'organisateur {self._role_label('organisateur')}…")
+        else:
+            self._out(f"Envoi à l'organisateur {self.organizer}… (requêtes espacées de 5 s)")
         report = orch.run(arg, self._context())
         self.last_report = report
         self.last_dedup = None
@@ -528,8 +559,8 @@ class App:
             self._out("Le dernier run ne contient pas d'idées au format JSON (worker generateur).")
             return
         if self.format_llm is None:
-            self._out("(Qwen 2.5 3B indisponible : seuls les doublons exacts seront regroupés.)")
-        self._out(f"Déduplication locale de {len(ideas)} idées (0 requête Gemini)…")
+            self._out("(Modèle de déduplication indisponible : seuls les doublons exacts seront regroupés.)")
+        self._out(f"Déduplication de {len(ideas)} idées par {self._role_label('dedup')}…")
         self.last_dedup = deduplicate(ideas, self.format_llm)
         self._out(render_dedup(self.last_dedup))
 
@@ -554,7 +585,7 @@ class App:
         if self._review_factory is None:
             self._out("Revue non configurée.")
             return
-        self._check_policy("gemini")  # avant tout travail, même local
+        self._check_policy(self._reviewers_provider)  # avant tout travail, même local
         if self.last_dedup is None:
             self._cmd_dedup("")
             if self.last_dedup is None:
@@ -562,11 +593,16 @@ class App:
         ideas = self.last_dedup.kept
         panel = self._review_factory(self.profile)
         used, limit = self._quota_info()
-        if limit - used < panel.max_requests:
-            self._out(f"Quota insuffisant : {limit - used} requêtes restantes, la revue en demande {panel.max_requests}.")
-            return
-        self._out(f"Revue de {len(ideas)} idées par {len(panel.reviewers)} reviewers "
-                  f"({panel.max_requests} requêtes Gemini, espacées de 5 s)…")
+        if self._gemini_used(self._reviewers_provider, "relecteur"):
+            if limit - used < panel.max_requests:
+                self._out(f"Quota insuffisant : {limit - used} requêtes restantes, la revue en demande "
+                          f"{panel.max_requests}.")
+                return
+            self._out(f"Revue de {len(ideas)} idées par {len(panel.reviewers)} reviewers "
+                      f"({panel.max_requests} requêtes Gemini, espacées de 5 s)…")
+        else:
+            self._out(f"Revue de {len(ideas)} idées par {len(panel.reviewers)} reviewers "
+                      f"({panel.max_requests} appels, agent {self._role_label('relecteur')})…")
         report = panel.review(ideas, self.fiche.to_context() if self.fiche else "")
         self.last_review = report
         used, limit = self._quota_info()
@@ -674,8 +710,8 @@ class App:
         if self.personal_lock:
             self._filter_refusals()  # sortie du verrou « données personnelles »
         self.personal_lock = False  # choix explicite de l'utilisateur
-        mode = (" Profil « données personnelles » : aucun fournisseur externe autorisé, masquage local seulement."
-                if profile.personal_data else "")
+        mode = (" Profil « données personnelles » : aucun fournisseur externe autorisé ; les rôles sont traités "
+                "par le Qwen local." if profile.personal_data else "")
         self._out(f"Profil : {profile.name} — {profile.description}{mode}")
 
     def _set_profile(self, profile: Profile, *, keep_results: bool = False) -> None:
@@ -702,7 +738,8 @@ class App:
         if choice in ("non", "n", "revoquer", "révoquer", "off"):
             r.revoke("révocation par l'utilisateur")
             r.asked = True  # plus de question pendant la session
-            self._out("Accord révoqué : vos messages sont reformulés localement par Qwen, rien n'est envoyé.")
+            self._out("Accord révoqué : vos messages sont reformulés localement par Qwen ; tout envoi externe d'un "
+                      "rôle en texte libre sera confirmé (o/n).")
         elif choice in ("oui", "o", "on"):
             if self._personal():
                 self._out("Refusé : profil « données personnelles », aucun envoi externe.")
@@ -805,7 +842,7 @@ class App:
             return
 
         # 1. Complexité : Qwen estime, le code calcule le score.
-        self._out("Estimation de la complexité par Qwen (local)…")
+        self._out(f"Estimation de la complexité par {self._role_label('interface')}…")
         fiche_text = self.fiche.to_context() if self.fiche else ""
         cx: Complexity = estimate_complexity(self._llm("interface"), verdict.idea, fiche_text)
         self._out(f"Complexité : {cx.fichiers} fichier(s), {cx.dependances} dépendance(s) nouvelle(s), "
@@ -827,7 +864,10 @@ class App:
             return
 
         # 3. Coût et durée, puis confirmation explicite avant tout appel.
-        if self.big_model == "claude":
+        if self.big_model == "agents" and not self._gemini_used("agents", "grand_modele"):
+            label = self._role_label("grand_modele")
+            cost = f"1 appel à l'agent {label}" + (f" : {COST_NOTE}" if "Claude" in label else ".")
+        elif self.big_model == "claude":
             cost = f"1 appel à Claude via Claude Code : {COST_NOTE} Durée estimée : 1 à 3 minutes."
         else:
             used, limit = self._quota_info()

@@ -1,1 +1,1 @@
-"""Interface locale (Qwen 3.5 4B) : terminal à commandes explicites, fiche projet, routage, présentation."""
+"""Interface (rôles routés, Qwen local en repli) : terminal à commandes explicites, fiche projet, routage, présentation."""

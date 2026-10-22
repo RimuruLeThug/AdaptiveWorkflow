@@ -2,7 +2,7 @@
 
 1. minimisation : seuls les champs déclarés utiles par le profil sont gardés ;
 2. détection déterministe (privacy/detectors.py) + valeurs des champs personnels ;
-3. indices indirects proposés par Qwen 3.5 4B, retenus SEULEMENT s'ils sont
+3. indices indirects proposés par le Qwen local, retenus SEULEMENT s'ils sont
    vérifiables (le passage cité existe tel quel dans le texte) ;
 4. aperçu validé par un humain avant tout envoi externe ;
 5. contrôle de fuite : les détecteurs repassent sur le texte masqué, et aucune

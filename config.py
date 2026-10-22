@@ -94,18 +94,28 @@ class GeminiQuota:
     reset_timezone: str = "America/Los_Angeles"  # minuit, heure du Pacifique
 
 
-# Rôles des agents (roadmap V2, agents interchangeables, voir agents.py). Chaque rôle
-# peut être confié à un autre agent par variable d'environnement AGENT_<ROLE>
-# (ex. AGENT_ROUTAGE=gemini_test,qwen_interface : agent principal puis replis) et
+# Rôles des agents (agents interchangeables, voir agents.py). V3 : chaque rôle est confié par
+# défaut à Claude Haiku (agent « claude_haiku », Claude Code sur l'abonnement), avec le Qwen
+# local en repli. Chaque rôle peut être confié à un autre agent par variable d'environnement
+# AGENT_<ROLE> (ex. AGENT_ROUTAGE=gemini,qwen : agent principal puis replis) et
 # AGENT_<ROLE>_DIFFICILE (agent des tâches jugées difficiles par le code).
 AGENT_ROLES = (
-    "organisateur", "worker", "relecteur", "grand_modele",  # Gemini (ou Claude) par défaut
-    "interface", "cadrage", "routage", "promesse",  # Qwen 3.5 4B par défaut
-    "format", "dedup", "reparation",  # Qwen 2.5 3B par défaut
-    # Reformule le texte libre en demande claire pour Qwen : agent Gemini par défaut, accord
-    # demandé une fois par session ; AGENT_REFORMULATION=qwen_interface pour tout garder en local.
+    "organisateur", "worker", "relecteur", "grand_modele",
+    "interface", "cadrage", "routage", "promesse",
+    "format", "dedup", "reparation",
+    # Reformule le texte libre en demande claire : accord demandé une fois par session ;
+    # AGENT_REFORMULATION=qwen pour tout garder en local.
     "reformulation",
 )
+
+# Anciennes variables (V2, deux modèles Qwen) : ignorées depuis la V3 (un seul modèle, QWEN_MODEL).
+LEGACY_QWEN_VARIABLES = ("QWEN_INTERFACE_MODEL", "QWEN_FORMAT_MODEL", "QWEN_INTERFACE_NUM_CTX",
+                         "QWEN_FORMAT_NUM_CTX")
+
+
+def legacy_qwen_variables() -> tuple:
+    """Anciennes variables Qwen encore présentes dans l'environnement (pour un avertissement)."""
+    return tuple(v for v in LEGACY_QWEN_VARIABLES if os.environ.get(v, "").strip())
 
 
 def _env_roles(suffix: str = "") -> tuple:
@@ -139,25 +149,27 @@ class Settings:
     contrarian_floor: float = 4.0  # ... si leur score pondéré atteint ce plancher
     max_review_ideas: int = 40
 
-    # Grand modèle : "gemini" (Flash-Lite, gratuit) ou "claude"
-    # (Claude Code, abonnement Pro de l'utilisateur, jamais l'API sans autorisation).
-    big_model_provider: str = "gemini"
-    claude_model: str = "sonnet"  # alias Claude Code : sonnet, opus, haiku...
+    # Grand modèle de l'escalade : "" (défaut V3) = l'agent du rôle grand_modele (claude_haiku
+    # sauf réaffectation) ; "gemini" (Flash-Lite, gratuit) ou "claude" (CLAUDE_MODEL) pour forcer.
+    # Claude passe par Claude Code sur l'abonnement de l'utilisateur, jamais l'API sans autorisation.
+    big_model_provider: str = ""
+    claude_model: str = "sonnet"  # agent « claude » (alias Claude Code : sonnet, opus, haiku...)
+    # Agent « claude_haiku » : défaut de tous les rôles en V3 (alias Claude Code).
+    claude_haiku_model: str = "haiku"
     claude_timeout_s: float = 600.0
     claude_allow_api_billing: bool = False
     # Score de complexité au-delà duquel une idée est candidate à l'escalade.
     # Valeur provisoire basse, à calibrer sur les premiers projets.
     complexity_threshold: int = 5
 
-    # Modèles locaux via Ollama. Tags de la bibliothèque
-    # Ollama, alignés sur `ollama list` de la machine de référence. Autre variante :
-    # QWEN_INTERFACE_MODEL / QWEN_FORMAT_MODEL dans .env.
+    # Modèle local via Ollama (V3 : UN SEUL modèle Qwen pour tous les usages locaux : replis,
+    # profils « données personnelles », indices indirects du masquage). Tag de la bibliothèque
+    # Ollama ; autre variante : QWEN_MODEL dans .env. Un seul contexte, pour qu'Ollama ne
+    # recharge pas le modèle d'un usage à l'autre (la réparation JSON a besoin de 16384).
     local_backend: str = "ollama"
     ollama_host: str = "http://localhost:11434"
-    qwen_interface_model: str = "qwen3.5:4b-q8_0"  # « Qwen 3.5 4B » : interface, cadrage, routage, contrôle de promesse
-    qwen_format_model: str = "qwen2.5:3b-instruct-q4_K_M"  # « Qwen 2.5 3B » : dédup, réparation JSON
-    qwen_interface_num_ctx: int = 8192
-    qwen_format_num_ctx: int = 16384  # réparation : document d'entrée + document réparé
+    qwen_model: str = "qwen3.5:9b-q4_K_M"  # « Qwen 3.5 9B » (≈ 6,6 Go), réflexion désactivée
+    qwen_num_ctx: int = 16384
     # Durée de maintien des modèles en VRAM après la dernière requête (ex. 2m, 30s, 0 = déchargé
     # aussitôt). Les points d'entrée déchargent en plus les modèles à l'arrêt du programme.
     ollama_keep_alive: str = "2m"
@@ -215,14 +227,13 @@ def load_settings() -> Settings:
         max_review_ideas=_env_int("MAX_REVIEW_IDEAS", d.max_review_ideas),
         big_model_provider=os.environ.get("BIG_MODEL_PROVIDER", d.big_model_provider).strip().lower(),
         claude_model=os.environ.get("CLAUDE_MODEL", d.claude_model).strip(),
+        claude_haiku_model=os.environ.get("CLAUDE_HAIKU_MODEL", d.claude_haiku_model).strip(),
         claude_timeout_s=_env_float("CLAUDE_TIMEOUT_S", d.claude_timeout_s),
         claude_allow_api_billing=os.environ.get("CLAUDE_ALLOW_API_BILLING", "").strip() in ("1", "true", "oui"),
         complexity_threshold=_env_int("COMPLEXITY_THRESHOLD", d.complexity_threshold),
         ollama_host=os.environ.get("OLLAMA_HOST_URL", d.ollama_host),
-        qwen_interface_model=os.environ.get("QWEN_INTERFACE_MODEL", d.qwen_interface_model),
-        qwen_format_model=os.environ.get("QWEN_FORMAT_MODEL", d.qwen_format_model),
-        qwen_interface_num_ctx=_env_int("QWEN_INTERFACE_NUM_CTX", d.qwen_interface_num_ctx),
-        qwen_format_num_ctx=_env_int("QWEN_FORMAT_NUM_CTX", d.qwen_format_num_ctx),
+        qwen_model=os.environ.get("QWEN_MODEL", "").strip() or d.qwen_model,
+        qwen_num_ctx=_env_int("QWEN_NUM_CTX", d.qwen_num_ctx),
         ollama_keep_alive=os.environ.get("LOCAL_KEEP_ALIVE", d.ollama_keep_alive).strip() or d.ollama_keep_alive,
         state_dir=Path(os.environ.get("ORCH_STATE_DIR", str(d.state_dir))),
         logs_dir=Path(os.environ.get("ORCH_LOGS_DIR", str(d.logs_dir))),

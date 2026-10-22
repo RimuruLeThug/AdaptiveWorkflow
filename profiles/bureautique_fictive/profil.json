@@ -1,6 +1,6 @@
 {
   "nom": "bureautique_fictive",
-  "description": "Exemple back-office de petite entreprise (relances, courriers) sur données FICTIVES. Profil « données personnelles » : aucun fournisseur externe n'est autorisé en V1 ; seul le masquage local est disponible.",
+  "description": "Exemple back-office de petite entreprise (relances, courriers) sur données FICTIVES. Profil « données personnelles » : aucun fournisseur externe n'est autorisé ; tous les rôles sont traités par le Qwen local (V3).",
   "donnees_personnelles": true,
   "workers": [
     {

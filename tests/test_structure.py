@@ -30,7 +30,7 @@ class StructureTest(unittest.TestCase):
         self.assertEqual(s.gemini.daily_hard_stop, 1400)
         self.assertEqual(s.gemini.max_retries, 2)
         self.assertEqual(s.gemini.reset_timezone, "America/Los_Angeles")
-        self.assertEqual(s.big_model_provider, "gemini")
+        self.assertEqual(s.big_model_provider, "")  # V3 : agent du rôle grand_modele (claude_haiku)
 
     def test_quotas_configurables(self):
         from config import load_settings

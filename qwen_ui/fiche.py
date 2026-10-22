@@ -1,4 +1,4 @@
-"""Fiche projet : cadrage par Qwen 3.5 4B."""
+"""Fiche projet : cadrage par l'agent du rôle « cadrage »."""
 
 from __future__ import annotations
 

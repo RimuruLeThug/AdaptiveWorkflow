@@ -26,25 +26,25 @@ The code decides, the models propose. Models never call each other, never call G
 | `pilot.py` | Replays a scenario with automatic "o" answers and writes a transcript and measurements to `logs/`. |
 | `calibrate.py` | Reads logs and decisions, suggests thresholds. Read-only. |
 
-Assembly is done in `qwen_ui/bootstrap.py`. Without any agent configuration, the objects are exactly the default ones; the agent router is only used for roles that are reassigned, and always exists for the rephrasing role.
+Assembly is done in `qwen_ui/bootstrap.py`. Since V3 every role goes through the agent router: by default each role uses `claude_haiku` (Claude Code) with the single local `qwen` model as fallback. `/organisateur gemini|claude` and `/grand gemini|claude` can still force a direct client.
 
 ## Startup
 
 1. `python -m qwen_ui` loads `.env` and the settings.
-2. The Gemini key is required: without it, the program stops with a message.
-3. Ollama must answer and have the interface model (`QWEN_INTERFACE_MODEL`); otherwise it stops. The format model is optional: if it is missing, a warning is shown and repair and deduplication are limited.
+2. The Gemini key is optional: without it, Gemini agents are unavailable (a warning is shown if a role uses Gemini).
+3. Ollama and the local model (`QWEN_MODEL`) are checked; if they are missing, a warning is shown (no local fallback, no personal-data processing) but the program starts.
 4. The startup profile (`PROFILE`) is loaded and validated.
-5. The shared objects are built: one rate limiter on `state/gemini_quota.json`, one Gemini client, one Claude client, the agents and their routes.
+5. The shared objects are built: one rate limiter on `state/gemini_quota.json`, one Gemini client (if a key exists), one Claude client, the agents and their routes. If a route uses Claude, `claude auth status` is checked once; on failure a warning is shown and the Claude agents are marked unavailable for the session, so roles go straight to their fallback.
 6. The loop starts. On exit (normal exit, Ctrl+C or error), the project's models are unloaded from VRAM.
 
 ## Free-text request
 
 Text that does not start with `/` goes through these steps. Each one is decided by code; the models only propose.
 
-1. **Personal data check (code).** The deterministic detectors look for e-mail addresses, IBANs, French social-security numbers, phone numbers and birth dates. If one is found, the session switches to the restrictive profile, the rephrasing consent is revoked, and external sends are blocked until an explicit `/profil`.
+1. **Personal data check (code).** The deterministic detectors look for e-mail addresses, IBANs, French social-security numbers, phone numbers, birth dates, SIRET and announced SIREN numbers, postal addresses, postal codes followed by a town, declared values and person names (title + name, "Firstname LASTNAME", common acronyms excluded). If one is found, the session switches to the restrictive profile, the session consent is revoked, and every role is handled by the local Qwen until an explicit `/profil`.
 2. **Explicit profile.** If the message names a profile ("passe en auto_projet"), it is noted. A personal-data profile is loaded at once, before any send.
-3. **Rephrasing.** The `reformulation` role turns the message into a clear request. Default: Gemini, after a single consent for the session. Masking and the leak check run before each external send. If the external agent fails, a local fallback (Qwen) is used. In a personal-data session the rephrasing is local only.
-4. **Routing.** Qwen 3.5 4B receives the rephrased request, the ideas of the last review and recent feedback examples, and proposes one action from a whitelist, plus a profile name. The code checks the action and the profile name, and rejects anything else.
+3. **Rephrasing.** The `reformulation` role turns the message into a clear request. Default: `claude_haiku`, after a single consent for the session; this consent also covers the other free-text roles assigned to the same provider. Masking and the leak check run before each external send. If the external agent fails, a local fallback (Qwen) is used. In a personal-data session the rephrasing is local only.
+4. **Routing.** The `routage` agent receives the rephrased request, the ideas of the last review and recent feedback examples, and proposes one action from a whitelist, plus a profile name. The code checks the action and the profile name, and rejects anything else.
 5. **Feedback branch.** If the action is `retour`, the feedback is interpreted by Qwen and checked by the code (numbers must exist in the last review). It is applied only after your `o`. Profiles are not changed by feedback.
 6. **Profile choice.** The proposed profile is used only if it exists, and never to leave a personal-data profile.
 7. **Confirmation.** `tache`, `revue`, `fiche` and `organisateur` need your `o` before they run. Other actions (`dedup`, `detail`, `resume`, `quota`, `workers`, `aide`) run directly, and they are local or read-only.
@@ -52,15 +52,15 @@ Text that does not start with `/` goes through these steps. Each one is decided 
 
 ## Explicit commands
 
-- `/tache`: checks the policy for the organizer and the workers, warns if the remaining Gemini quota is below the worst case (plans + delegations + synthesis), then calls the orchestrator with the project sheet and the refusals of earlier sessions (never personal ones).
-- `/dedup`: deduplicates the ideas of the last run. Exact duplicates are grouped without a model. Qwen 2.5 3B may propose more groups, and each group is checked (existing ids, at least two ideas, no mixing of contrarian ideas with others, no single group absorbing more than half the ideas when there are six or more). If nothing is valid, all ideas are kept.
-- `/revue`: checks the policy, checks the remaining quota (three requests), then the three reviewers each score all deduplicated ideas in one request, without seeing the others. Each review is validated (JSON, schema, unknown or duplicate ids, missing ideas counted as abstentions). Approval is `score >= threshold`; an idea is approved if at least 2 of 3 approve. The shortlist takes the approved ideas first (at most `SHORTLIST_MAX`, 8 by default), completes with the best non-approved ideas up to `SHORTLIST_MIN` (5 by default), then keeps at least `CONTRARIAN_QUOTA` contrarian ideas whose weighted score reaches `CONTRARIAN_FLOOR`, even at an average score; on a full list they replace the weakest non-contrarian ideas.
+- `/tache`: checks the policy for the organizer and the workers (with the default `agents` organizer, the router applies it per role), warns if a role uses Gemini and the remaining Gemini quota is below the worst case (plans + delegations + synthesis), then calls the orchestrator with the project sheet and the refusals of earlier sessions (never personal ones).
+- `/dedup`: deduplicates the ideas of the last run. Exact duplicates are grouped without a model. The `dedup` agent may propose more groups, and each group is checked (existing ids, at least two ideas, no mixing of contrarian ideas with others, no single group absorbing more than half the ideas when there are six or more). If nothing is valid, all ideas are kept.
+- `/revue`: checks the policy, checks the remaining Gemini quota if reviewers use Gemini (three requests), then the three reviewers each score all deduplicated ideas in one request, without seeing the others. Each review is validated (JSON, schema, unknown or duplicate ids, missing ideas counted as abstentions). Approval is `score >= threshold`; an idea is approved if at least 2 of 3 approve. The shortlist takes the approved ideas first (at most `SHORTLIST_MAX`, 8 by default), completes with the best non-approved ideas up to `SHORTLIST_MIN` (5 by default), then keeps at least `CONTRARIAN_QUOTA` contrarian ideas whose weighted score reaches `CONTRARIAN_FLOOR`, even at an average score; on a full list they replace the weakest non-contrarian ideas.
 - `/valider`, `/refuser`: append a decision to `state/decisions.jsonl`. Refusals of non-personal ideas are passed to the organizer at the next `/tache`.
-- `/escalader`: checks the policy for the big model, requires a validated and approved idea, has Qwen estimate the complexity, computes the score in code, builds the contract in code and freezes it after your `o`, shows the cost, asks for a second `o`, then calls the big model. The result is checked: JSON and schema, non-negotiable constraints present, no out-of-scope item added, every change justified, promise unchanged (Qwen answers one closed question). Any failure rejects the version.
+- `/escalader`: checks the policy for the big model, requires a validated and approved idea, has the `interface` agent estimate the complexity, computes the score in code, builds the contract in code and freezes it after your `o`, shows the cost, asks for a second `o`, then calls the big model. The result is checked: JSON and schema, non-negotiable constraints present, no out-of-scope item added, every change justified, promise unchanged (the `promesse` agent answers one closed question). Any failure rejects the version.
 
 ## Orchestration bus (`/tache`)
 
-1. **Plan.** The organizer (Gemini or Claude) returns a JSON plan. The bus checks it against the closed list of workers of the profile and against the delegation budget. An invalid plan is rejected as a whole; the organizer may correct it once (`MAX_PLAN_ATTEMPTS`).
+1. **Plan.** The organizer (the `organisateur` role, or a direct Gemini or Claude client) returns a JSON plan. The bus checks it against the closed list of workers of the profile and against the delegation budget. An invalid plan is rejected as a whole; the organizer may correct it once (`MAX_PLAN_ATTEMPTS`).
 2. **Delegations.** Each task goes to one worker. A worker sees only its own instruction and the project sheet. Workers do not delegate (`MAX_DEPTH=1`). Each delegation counts against `DELEGATION_BUDGET`, including retries.
 3. **Verification.** Each output is checked (`verify/basic.py`) before it is used. A failed output is not returned as valid; the failure is logged.
 4. **Synthesis.** If at least one output is accepted, the organizer may write a synthesis, which is checked the same way.

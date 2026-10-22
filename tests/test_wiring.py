@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest import mock
 
 import config
-from agents import AgentError, AgentRouter, RoleClient, RoleLLM
+from agents import ROLES, AgentError, AgentRouter, RoleClient, RoleLLM
 from config import GeminiQuota, Settings
 from gemini_client import GeminiClient, HttpResponse
 from local_llm import OllamaBackend
@@ -34,11 +34,14 @@ FICHE_OK = json.dumps({"objectif": "Un outil de devis", "contraintes": [], "peri
 # Langage libre : reformulation locale par Qwen (accord Gemini refusé ou profil perso).
 REFORM_OK = json.dumps({"demande": "demande reformulée", "intention": "", "objet": "", "contraintes": [],
                         "ambiguites": []})
-# Données fictives. Le code postal (seul) est masqué avant tout envoi externe mais ne déclenche pas
-# le profil restrictif (hors TRIGGER_KINDS) : il permet de couvrir le masquage du routage de bout en bout.
+# Données fictives. Le code postal seul (sans ville) est masqué avant tout envoi externe mais ne
+# déclenche pas le profil restrictif : il permet de couvrir le masquage du routage de bout en bout.
 EMAIL = "jean.martin@exemple.fr"
 CP = "75011"
-ACCORD = "Autoriser Gemini à reformuler vos messages (texte masqué, contrôle de fuite avant chaque envoi) ? (o/n) "
+ACCORD = ("Autoriser Claude pour cette session : reformulation de vos messages et autres rôles en texte libre "
+          "(routage, cadrage, résumés...) ; texte masqué, contrôle de fuite avant chaque envoi. Sinon, "
+          "reformulation locale et confirmation de chaque envoi ? (o/n) ")
+DISCUSSION = json.dumps({"action": "discussion", "argument": "", "reponse": "bonjour"})
 
 
 class FakeClaude:
@@ -114,7 +117,7 @@ class WiringFixture(unittest.TestCase):
         return replace(self.settings, agent_roles=tuple(roles), gemini_test_model=TEST_MODEL, **kw)
 
 
-class DefaultUnchangedTest(WiringFixture):
+class DefaultV3Test(WiringFixture):
     def test_sans_configuration_rien_n_est_detecte(self):
         with mock.patch.dict(os.environ, {}, clear=True):
             s = config.load_settings()
@@ -123,51 +126,141 @@ class DefaultUnchangedTest(WiringFixture):
         self.assertTrue(agents_configured(replace(s, gemini_test_model=TEST_MODEL), None))
         self.assertTrue(agents_configured(replace(s, agent_roles=(("routage", "gemini"),)), None))
 
-    def test_defaut_memes_objets(self):
+    def test_defaut_v3_tous_les_roles_routes(self):
         profile = load_profile("brainstorm")
         c = self.components(profile=profile)
-        self.assertIsNone(c.router)
-        self.assertEqual(c.routed_roles, ())
-        self.assertNotIn("role_llms", c.app_kwargs)
-        self.assertIs(c.llm, self.llm)
-        self.assertIs(c.app_kwargs["format_llm"], self.format_llm)
-        self.assertEqual(self.logger.events, [])
-        self.assertEqual(self.outputs, [])
+        self.assertIsInstance(c.router, AgentRouter)
+        self.assertEqual(c.routed_roles, tuple(ROLES))
+        for role, r in c.router.routes.items():
+            self.assertEqual((r.agents(), r.source), (["claude_haiku", "qwen"], "défaut"), role)
+        self.assertEqual(c.app_kwargs["role_llms"].keys(), {"interface", "cadrage", "routage"})
+        self.assertEqual(c.app_kwargs["format_llm"].role, "dedup")
+        self.assertEqual((c.app_kwargs["organizer"], c.app_kwargs["big_model"]), ("agents", "agents"))
+        self.assertFalse(any(o.startswith("Agents configurés") for o in self.outputs))
 
-        orch = c.orchestrator_factory("gemini", profile)
-        self.assertIs(orch.organizer._client, self.client)
-        self.assertTrue(all(w._client is self.client for w in orch._workers.values()))
-        self.assertEqual(orch.request_counter(), self.client.requests_sent)
+        orch = c.orchestrator_factory("agents", profile)
+        self.assertEqual(orch.organizer._client.role, "organisateur")
+        self.assertTrue(all(w._client.role == "worker" for w in orch._workers.values()))
+        self.assertIs(c.orchestrator_factory("gemini", profile).organizer._client, self.client)  # choix explicite
         claude_orch = c.orchestrator_factory("claude", profile)
         self.assertIsInstance(claude_orch.organizer, ClaudeOrganizer)
         self.assertIs(claude_orch.organizer._client, self.claude)
-        self.assertIs(c.app_kwargs["review_factory"](profile).client, self.client)
-        esc = c.app_kwargs["escalator_factory"]("gemini")
-        self.assertIs(esc.big_model, self.client)
-        self.assertIs(esc.promise_llm, self.llm)
+        self.assertEqual(c.app_kwargs["review_factory"](profile).client.role, "relecteur")
+        esc = c.app_kwargs["escalator_factory"]("agents")
+        self.assertEqual((esc.big_model.role, esc.promise_llm.role), ("grand_modele", "promesse"))
+        self.assertIn("claude_haiku", esc.provider)
+        self.assertIs(c.app_kwargs["escalator_factory"]("gemini").big_model, self.client)
         self.assertIs(c.app_kwargs["escalator_factory"]("claude").big_model, self.claude)
 
         with mock.patch.object(bootstrap, "repair_json") as repair:
             orch.repairer("{", {})
             c.app_kwargs["review_factory"](profile).repairer("{", {})
-        self.assertTrue(all(call.args[2] is self.format_llm for call in repair.call_args_list))
+        self.assertTrue(all(call.args[2].role == "reparation" for call in repair.call_args_list))
 
         app = self.app(c)
-        self.assertIs(app.llm, self.llm)
+        self.assertEqual((app.organizer, app.big_model), ("agents", "agents"))
         for role in ("routage", "cadrage", "interface"):
-            self.assertIs(app._llm(role), self.llm)
+            self.assertEqual(app._llm(role).role, role)
 
-    def test_defaut_cadrage_et_routage_par_qwen(self):
-        self.llm.answers.extend([REFORM_OK, json.dumps({"action": "discussion", "argument": "", "reponse": "bonjour"}),
-                                 FICHE_OK])
-        self.inputs.extend(["n", "n"])  # accord de reformulation refusé, fiche non validée
+    def test_un_seul_modele_qwen_pour_tous_les_usages_locaux(self):
+        c = self.components()
+        reg = c.router.registry
+        self.assertIs(reg.get("qwen").llm, self.llm)
+        self.assertIs(reg.get("qwen_interface").llm, self.llm)
+        self.assertIs(reg.get("qwen_format").llm, self.format_llm)  # backend fourni par l'appelant
+        c2 = build_components(self.settings, None, llm=self.llm, format_llm=None, limiter=self.limiter,
+                              client=self.client, claude=self.claude, output_fn=self.outputs.append,
+                              app_state_dir=self.tmp / "app", logger=self.logger)
+        self.assertIs(c2.router.registry.get("qwen_format").llm, self.llm)  # V3 : None = le même modèle
+
+    def test_claude_absent_repli_qwen_sans_confirmation_inutile(self):
+        # Claude Code introuvable (garde-fou des tests) : claude_haiku est sauté AVANT tout aperçu,
+        # chaque rôle passe à son repli local ; l'accord de session est demandé une fois.
+        self.llm.answers.extend([REFORM_OK, DISCUSSION, FICHE_OK])
+        self.inputs.extend(["n", "n"])  # accord de session refusé, fiche non validée
         app = self.app(self.components(profile=load_profile("brainstorm")))
         app.handle("salut")
         app.handle("/fiche un outil de devis")
         self.assertEqual(len(self.llm.calls), 3)  # reformulation locale, routage, cadrage
         self.assertEqual(self.outputs.count(ACCORD), 1)
+        self.assertNotIn("Envoyer ce texte à un agent externe ? (o/n) ", self.outputs)
         self.assertEqual(self.transport.requests, [])
-        self.assertFalse((self.tmp / "logs").exists())  # aucun journal d'agents créé
+        self.assertIn("Cadrage par claude_haiku (Claude via Claude Code, abonnement)…", self.outputs)
+        calls = [(e["role"], e["agent"], e["result"]) for e in self.logger.events if e["event"] == "agent_call"]
+        self.assertIn(("routage", "claude_haiku", "indisponible"), calls)
+        self.assertIn(("routage", "qwen", "ok"), calls)
+
+    def test_claude_haiku_avec_accord_de_session_aucune_confirmation_par_envoi(self):
+        sent = []
+
+        class Haiku:
+            model = "haiku"
+
+            def executable(self):
+                return "claude"
+
+            def generate(self, prompt, **kw):
+                sent.append(prompt)
+                from claude_cli import ClaudeResult
+                text = REFORM_OK if "Message de l'utilisateur" in prompt else DISCUSSION
+                return ClaudeResult(text=text)
+
+        c = build_components(
+            self.settings, load_profile("brainstorm"), llm=self.llm, format_llm=None, limiter=self.limiter,
+            client=self.client, claude=self.claude, input_fn=self.input_fn, output_fn=self.outputs.append,
+            app_state_dir=self.tmp / "app", masker_factory=lambda: Masker(Vault()),
+            claude_client_factory=lambda model: Haiku(), logger=self.logger)
+        self.inputs.append("o")  # accord de session : une seule question
+        app = self.app(c)
+        app.handle(f"salut, une idée pour le devis du {CP}")
+        self.assertEqual(self.outputs.count(ACCORD), 1)
+        self.assertNotIn("Envoyer ce texte à un agent externe ? (o/n) ", self.outputs)  # couvert par l'accord
+        self.assertEqual(len(sent), 2)  # reformulation + routage
+        self.assertTrue(all(CP not in p and "[CODE_POSTAL_1]" in p for p in sent))  # masqué avant envoi
+        self.assertEqual(self.llm.calls, [])
+        self.assertIn("bonjour", self.outputs)
+        app.handle("/accord non")
+        self.assertFalse(c.router.has_session_consent("routage", "claude"))
+        app.handle("/accord oui")  # accord explicite : tous les rôles en texte libre confiés à Claude
+        for role in ("reformulation", "routage", "cadrage", "dedup", "reparation"):
+            self.assertTrue(c.router.has_session_consent(role, "claude"), role)
+        self.assertFalse(c.router.has_session_consent("worker", "claude"))
+
+    def test_tache_complete_sans_gemini_ni_claude_tout_en_local(self):
+        # Claude absent : organisateur, worker et synthèse passent au Qwen local ; aucun message de
+        # quota Gemini, aucune requête Gemini, aucune confirmation (rien ne part).
+        plan = json.dumps({"tasks": [{"worker": "analyste", "instruction": "analyse le marché"}]})
+        self.llm.answers.extend([plan, "idées du worker", "synthèse finale"])
+        app = self.app(self.components(profile=load_profile("brainstorm")))
+        app.handle("/tache trouve 3 idées")
+        text = "\n".join(self.outputs)
+        self.assertIn("Envoi à l'organisateur claude_haiku (Claude via Claude Code, abonnement)…", self.outputs)
+        self.assertNotIn("requêtes Gemini aujourd'hui", text)
+        self.assertEqual(self.transport.requests, [])
+        self.assertIsNotNone(app.last_report)
+        self.assertEqual(app.last_report.accepted[0].text, "idées du worker")
+        calls = [(e["role"], e["agent"], e["result"]) for e in self.logger.events if e["event"] == "agent_call"]
+        self.assertIn(("organisateur", "qwen", "ok"), calls)
+        self.assertIn(("worker", "qwen", "ok"), calls)
+
+    def test_sans_cle_gemini_agent_saute_avant_tout_apercu(self):
+        s = self.configured(("routage", "gemini,qwen"))
+        c = build_components(s, None, llm=self.llm, format_llm=None, limiter=self.limiter, client=None,
+                             claude=self.claude, input_fn=self.input_fn, output_fn=self.outputs.append,
+                             app_state_dir=self.tmp / "app", logger=self.logger)
+        self.llm.answers.append(ROUTE_OK)
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(config, "load_dotenv"):
+            res = c.router.call("routage", "salut")
+        self.assertEqual(res.agent, "qwen")
+        self.assertNotIn("Envoyer ce texte à un agent externe ? (o/n) ", self.outputs)  # pas d'aperçu inutile
+        self.assertEqual(c.router.journal[0]["result"], "indisponible")
+        self.assertIn("GEMINI_API_KEY", c.router.journal[0]["detail"])
+
+    def test_quota_gemini_annonce_seulement_si_un_role_utilise_gemini(self):
+        c = self.components(self.configured(("relecteur", "gemini")))
+        self.assertTrue(c.app_kwargs["role_uses_gemini"]("relecteur"))
+        self.assertFalse(c.app_kwargs["role_uses_gemini"]("organisateur"))
+        self.assertIn("gemini (Gemini, quota commun)", c.app_kwargs["role_label"]("relecteur"))
 
     def test_build_app_passe_par_l_assemblage_sans_reseau(self):
         env = {"ORCH_STATE_DIR": str(self.tmp), "ORCH_LOGS_DIR": str(self.tmp / "logs")}
@@ -180,11 +273,32 @@ class DefaultUnchangedTest(WiringFixture):
                                       app_state_dir=self.tmp / "app")
         kw = spy.call_args.kwargs
         self.assertIsInstance(kw["llm"], OllamaBackend)
+        self.assertEqual(kw["llm"].model, "qwen3.5:9b-q4_K_M")
         self.assertIs(app.llm, kw["llm"])
-        self.assertIs(app.format_llm, kw["format_llm"])
+        self.assertIsNone(kw["format_llm"])  # un seul modèle local
+        self.assertEqual(app.format_llm.role, "dedup")
         self.assertIs(kw["client"].limiter, kw["limiter"])
         self.assertEqual(kw["limiter"].state_path, self.tmp / "gemini_quota.json")
-        self.assertEqual(app._role_llms, {})
+        self.assertEqual(set(app._role_llms), {"interface", "cadrage", "routage"})
+        self.assertTrue(any(o.startswith("Attention : Claude indisponible") for o in self.outputs))
+
+    def test_build_app_sans_cle_gemini_ni_ollama(self):
+        from local_llm import LocalLLMError
+        env = {"ORCH_STATE_DIR": str(self.tmp), "ORCH_LOGS_DIR": str(self.tmp / "logs"),
+               "QWEN_INTERFACE_MODEL": "ancien:tag"}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                mock.patch.object(config, "load_dotenv"), \
+                mock.patch.object(OllamaBackend, "check_available", side_effect=LocalLLMError("Ollama éteint")), \
+                mock.patch.object(bootstrap, "build_components", wraps=bootstrap.build_components) as spy:
+            app = bootstrap.build_app(input_fn=self.input_fn, output_fn=self.outputs.append,
+                                      app_state_dir=self.tmp / "app")
+        self.assertIsNone(spy.call_args.kwargs["client"])
+        self.assertTrue(any(o.startswith("Attention : Qwen local indisponible") for o in self.outputs))
+        self.assertTrue(any("QWEN_INTERFACE_MODEL" in o and "QWEN_MODEL" in o for o in self.outputs))
+        self.assertEqual(app.organizer, "agents")
+        app.handle("/organisateur gemini")  # client direct impossible sans clé : message clair, pas de plantage
+        app.handle("/tache une consigne")
+        self.assertTrue(any("GEMINI_API_KEY" in o for o in self.outputs))
 
 
 class ConfiguredRoleTest(WiringFixture):
@@ -192,18 +306,16 @@ class ConfiguredRoleTest(WiringFixture):
         s = self.configured(("routage", "gemini_test"), ("worker", "qwen_interface"))
         c = self.components(s, load_profile("brainstorm"))
         self.assertIsInstance(c.router, AgentRouter)
-        self.assertEqual(c.routed_roles, ("worker", "routage"))
-        self.assertEqual(c.app_kwargs["role_llms"].keys(), {"routage"})
-        self.assertIs(c.app_kwargs["format_llm"], self.format_llm)  # dédup non réaffectée
-        orch = c.orchestrator_factory("gemini", None)
-        self.assertIs(orch.organizer._client, self.client)  # organisateur non réaffecté
+        self.assertEqual((c.router.routes["routage"].agents(), c.router.routes["routage"].source),
+                         (["gemini_test"], "configuration"))
+        self.assertEqual(c.router.routes["dedup"].agents(), ["claude_haiku", "qwen"])  # non réaffectée
+        orch = c.orchestrator_factory("agents", None)
         self.assertTrue(all(isinstance(w._client, RoleClient) and w._client.role == "worker"
                             for w in orch._workers.values()))
         self.assertIn("Agents configurés : worker -> qwen_interface (configuration), "
                       "routage -> gemini_test (configuration)", self.outputs)
 
         app = self.app(c)
-        self.assertIs(app._llm("cadrage"), self.llm)
         self.assertIsInstance(app._llm("routage"), RoleLLM)
         self.answer(ROUTE_OK)
         self.llm.answers.append(REFORM_OK)
@@ -261,7 +373,7 @@ class ConfiguredRoleTest(WiringFixture):
                                                      agents={"roles": {"cadrage": "qwen_format"}}))
         profile = load_profile("perso_agents", self.tmp)
         c = self.components(profile=profile)
-        self.assertEqual(c.routed_roles, ("cadrage",))
+        self.assertEqual(c.router.routes["cadrage"].source, "profil")
         self.format_llm.answers.append(FICHE_OK)
         self.inputs.append("n")
         self.app(c).handle("/fiche un outil de devis")
@@ -277,12 +389,12 @@ class ConfiguredRoleTest(WiringFixture):
                             ("grand_modele", "gemini_test"), ("promesse", "qwen_format"),
                             ("dedup", "qwen_format"), ("reparation", "qwen_format"))
         c = self.components(s)
-        orch = c.orchestrator_factory("gemini", None)
+        orch = c.orchestrator_factory("agents", None)
         self.assertEqual(orch.organizer._client.role, "organisateur")
-        self.assertTrue(all(w._client is self.client for w in orch._workers.values()))
+        self.assertTrue(all(w._client.role == "worker" for w in orch._workers.values()))
         self.assertEqual(c.app_kwargs["review_factory"](None).client.role, "relecteur")
         self.assertEqual(c.app_kwargs["format_llm"].role, "dedup")
-        esc = c.app_kwargs["escalator_factory"]("gemini")
+        esc = c.app_kwargs["escalator_factory"]("agents")
         self.assertEqual((esc.big_model.role, esc.promise_llm.role), ("grand_modele", "promesse"))
         self.assertIn("gemini_test", esc.provider)
         self.assertIs(c.app_kwargs["escalator_factory"]("claude").big_model, self.claude)  # choix explicite
@@ -315,38 +427,50 @@ class SingleQueueTest(WiringFixture):
 
     def test_gemini_test_seul_ne_change_aucun_role(self):
         c = self.components(replace(self.settings, gemini_test_model=TEST_MODEL))
-        self.assertEqual(c.routed_roles, ())
-        self.assertNotIn("role_llms", c.app_kwargs)
+        self.assertTrue(all(r.source == "défaut" for r in c.router.routes.values()))
+        self.assertFalse(any(o.startswith("Agents configurés") for o in self.outputs))
         self.assertIs(c.orchestrator_factory("gemini", None).organizer._client, self.client)
 
 
 class PersonalDataTest(WiringFixture):
-    def test_profil_donnees_perso_refuse_tout_externe(self):
+    def test_profil_donnees_perso_tout_en_local_meme_avec_configuration_externe(self):
         s = self.configured(("routage", "gemini_test"), ("organisateur", "gemini_test"),
                             ("cadrage", "qwen_interface,gemini"))
         c = self.components(s, load_profile("bureautique_fictive"))
         app = self.app(c)
-        self.llm.answers.append(REFORM_OK)  # reformulation locale imposée par le profil
-        app.handle("bonjour")  # aucune question : refus avant tout aperçu
-        self.assertTrue(any(o.startswith("Refusé par la politique de données") for o in self.outputs))
-        for role in ("organisateur", "cadrage"):
-            with self.assertRaises(PolicyError):
-                c.router.call(role, "p")
-        app.handle("/tache une consigne")
+        self.llm.answers.extend([REFORM_OK, DISCUSSION])  # reformulation et routage locaux
+        app.handle("bonjour")  # aucune question : rien ne peut partir
+        self.assertIn("bonjour", self.outputs)
+        self.llm.answers.extend(["plan local", "fiche locale"])
+        self.assertEqual(c.router.call("organisateur", "p").agent, "qwen")
+        self.assertEqual(c.router.call("cadrage", "p").agent, "qwen_interface")
         self.assertEqual(self.transport.requests, [])
-        self.assertEqual(len(self.llm.calls), 1)  # la seule reformulation, locale
         self.assertNotIn(ACCORD, self.outputs)  # jamais d'accord demandé en profil perso
+        self.assertNotIn("Envoyer ce texte à un agent externe ? (o/n) ", self.outputs)
         refused = [e for e in self.logger.events if e.get("result") == "refuse_politique"]
         self.assertTrue(refused and all(e["external"] for e in refused))
+        self.assertIn("qwen (local)", c.app_kwargs["role_label"]("organisateur"))
 
     def test_passage_a_un_profil_perso_en_cours_de_session(self):
         c = self.components(self.configured(("routage", "gemini_test")), load_profile("brainstorm"))
         app = self.app(c)
         app.handle("/profil bureautique_fictive")
-        self.llm.answers.append(REFORM_OK)
+        self.assertTrue(any("traités par le Qwen local" in o for o in self.outputs))
+        self.llm.answers.extend([REFORM_OK, DISCUSSION])
         app.handle("bonjour")
-        self.assertTrue(any(o.startswith("Refusé par la politique de données") for o in self.outputs))
         self.assertEqual(self.transport.requests, [])
+        calls = [(e["role"], e["agent"], e["result"]) for e in self.logger.events if e["event"] == "agent_call"]
+        self.assertIn(("routage", "gemini_test", "refuse_politique"), calls)
+        self.assertIn(("routage", "qwen", "ok"), calls)
+
+    def test_donnee_personnelle_dans_le_texte_libre_bascule_tout_en_local(self):
+        self.llm.answers.extend([REFORM_OK, DISCUSSION])
+        app = self.app(self.components(profile=load_profile("brainstorm")))
+        app.handle("relance M. Dupont pour la facture")  # nom avec civilité : déclencheur V3
+        self.assertTrue(app._personal())
+        self.assertEqual(app.profile.name, "bureautique_fictive")
+        self.assertEqual(len(self.llm.calls), 2)
+        self.assertNotIn(ACCORD, self.outputs)
 
 
 class ReviewFixesTest(WiringFixture):

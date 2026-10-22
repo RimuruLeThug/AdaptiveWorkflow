@@ -3,10 +3,10 @@
 Workflow agents (Qwen, Gemini, Claude through `claude_cli.py`) are interchangeable through `agents.py`. A role
 (organizer, worker, reviewer, big model, rephrasing for free-language mode, and the Qwen roles interface/framing/routing/promise/format/dedup/repair)
 is reassigned by configuration (`AGENT_<ROLE>` in `.env`) or by the `agents` key of a profile, without touching the
-skeleton. Defaults are unchanged: Qwen roles stay local. This is unrelated to the development sub-agents used to build the project.
+skeleton. Since V3 every role defaults to `claude_haiku` with the single local `qwen` model as fallback. This is unrelated to the development sub-agents used to build the project.
 
 ## Verified offline only (unit tests with fake agents: `tests/test_agents.py`, `tests/test_wiring.py`)
-- Contract cases: valid reply, invalid JSON repaired by a fake Qwen 2.5 3B, timeout, HTTP 429, out-of-schema reply, empty reply.
+- Contract cases: valid reply, invalid JSON repaired by a fake local model, timeout, HTTP 429, out-of-schema reply, empty reply.
 - Role replacement by configuration or profile only; routing by configured rule; fallback when an agent is unavailable.
 - Each routing choice is logged on the bus log (`agent_call`: role, provider, model, duration_s, result, reason).
 - Every Gemini call, whatever the agent, goes through the single rate-limiter queue.

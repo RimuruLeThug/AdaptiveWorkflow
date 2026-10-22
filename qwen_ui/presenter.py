@@ -41,7 +41,7 @@ def render_report(report: RunReport, *, budget: int, remaining_quota: Optional[i
     elif report.accepted:
         lines.append("\nPas de synthèse disponible.")
     if numbered:
-        lines.append(f"\n/detail <1-{len(numbered)}> pour lire une sortie complète, /resume pour un résumé local.")
+        lines.append(f"\n/detail <1-{len(numbered)}> pour lire une sortie complète, /resume pour un résumé.")
     if report.log_path:
         lines.append(f"Journal : {report.log_path}")
     return "\n".join(lines)
@@ -74,4 +74,12 @@ def summarize(llm: LocalLLM, report: RunReport) -> str:
         return "Rien à résumer : aucune sortie vérifiée."
     partial = "Attention : run partiel, certaines sorties ont été rejetées.\n" if report.rejected else ""
     reply = llm.ask(f"{partial}<<<RESULTAT\n{source}\nRESULTAT>>>", system=SUMMARY_SYSTEM, temperature=0.1)
-    return "Résumé Qwen (local, peut omettre des nuances — la synthèse d'origine fait foi) :\n" + reply.text
+    return f"Résumé {_who(reply.model)}peut omettre des nuances — la synthèse d'origine fait foi) :\n" + reply.text
+
+
+def _who(model: str) -> str:
+    """« Qwen (local, » pour le modèle local ; sinon l'agent qui a répondu (« par claude_haiku ( »)."""
+    agent, sep, _ = (model or "").partition(":")  # rôle routé : « agent:modèle »
+    if sep and agent and not agent.startswith("qwen"):
+        return f"par {agent} ("
+    return "Qwen (local, "
