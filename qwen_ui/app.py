@@ -14,7 +14,7 @@ import re
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, List, Mapping, Optional, Tuple
+from typing import Callable, List, Mapping, Optional, Sequence, Tuple
 
 from config import MissingKeyError
 from gemini_client import GeminiDailyQuotaError, GeminiError
@@ -38,6 +38,8 @@ from privacy.policy import PolicyError, check_provider
 from profiles.loader import Profile, ProfileError
 from escalation import (Complexity, EscalationResult, Escalator, build_contract, estimate_complexity,
                         render_contract, render_escalation)
+from dossier.inventaire import DossierError, Limites
+from qwen_ui.dossier_app import DossierMixin, DossierOuvert, PickerFn, protected_dirs
 
 PROVIDERS = {
     "agents": "agents des rôles (défaut : Claude Haiku via Claude Code, repli Qwen local ; voir AGENT_<ROLE>)",
@@ -65,7 +67,7 @@ def _score(value: Optional[float]) -> str:
     return "sans note" if value is None else f"{value:.1f}/10"
 
 
-class App:
+class App(DossierMixin):
     def __init__(
         self,
         llm: LocalLLM,
@@ -94,6 +96,10 @@ class App:
         role_label: Optional[Callable[[str], str]] = None,
         role_uses_gemini: Optional[Callable[[str], bool]] = None,
         conversation: bool = False,
+        folder_picker: Optional[PickerFn] = None,
+        dossier_limites: Optional[Limites] = None,
+        home: Optional[Path] = None,
+        protected: Sequence[Path] = (),
     ) -> None:
         self.llm = llm
         # Agents interchangeables (agents.py) : modèle par rôle ; rôle absent = llm, comme avant.
@@ -142,6 +148,16 @@ class App:
         # même si le profil restrictif n'a pas pu être chargé. Seul /profil explicite la lève.
         self.personal_lock = False
         self._profile_infos: Optional[List[Tuple[str, str]]] = None
+        # Dossier du PC (V3.2, qwen_ui/dossier_app.py) : lecture seule, aucune écriture sans « oui ».
+        self.dossier: Optional[DossierOuvert] = None
+        # Accord dédié refusé pour le dossier ouvert : tout reste sur le PC jusqu'à sa fermeture.
+        self.dossier_local = False
+        self._folder_picker = folder_picker
+        self._dossier_limites = dossier_limites or Limites()
+        self._home = Path(home) if home is not None else Path.home()
+        self._dossier_state_dir = Path(state_dir) / "dossiers"
+        # Dossiers du programme : jamais inventoriés ni modifiés, même si l'utilisateur ouvre le projet lui-même.
+        self._protected_dirs = protected_dirs(Path(state_dir), *protected)
         # Refus remontés à l'organisateur (après le profil : les déclarés servent au filtrage perso).
         self.refusals: List[dict] = self._load_refusals()
 
@@ -211,6 +227,8 @@ class App:
             self._out(f"Tâche refusée par le bus : {exc}")
         except (GeminiError, RateLimiterError) as exc:
             self._out(f"Erreur Gemini : {exc}")
+        except DossierError as exc:
+            self._out(f"Dossier : {exc}")
         finally:
             self._talking = False
         return True
@@ -263,7 +281,8 @@ class App:
     # ------------------------------------------------------- langage libre
 
     def _personal(self) -> bool:
-        return bool(self.profile and self.profile.personal_data) or self.personal_lock
+        # dossier_local : accord refusé pour le dossier ouvert, tout reste sur le PC jusqu'à sa fermeture.
+        return bool(self.profile and self.profile.personal_data) or self.personal_lock or self.dossier_local
 
     def _profiles(self) -> List[Tuple[str, str]]:
         """(nom, description) des profils chargeables ; les profils invalides sont ignorés."""
@@ -494,9 +513,12 @@ class App:
         else:
             llm = self._conversation_llm()
             n_outputs = len(self.last_report.accepted) + len(self.last_report.rejected) if self.last_report else 0
+            d = self.dossier
             proposal = conv.converse(llm, line, history=self._history.render(skip_last=True),
                                      state=self._conv_state(), profiles=self._profiles(), exemples=exemples,
-                                     n_outputs=n_outputs, idea_ids=idea_ids)
+                                     n_outputs=n_outputs, idea_ids=idea_ids, folder_open=d is not None,
+                                     has_proposal=d is not None and d.proposition is not None,
+                                     can_undo=d is not None and d.peut_annuler())
         if named_profile is not None and proposal.action != "retour":  # jamais pour un retour
             self._auto_profile(named, named_profile)
         if self._act(proposal, line, exemples, named) is False:
@@ -608,6 +630,23 @@ class App:
             self._cmd_escalader(p.argument)
         elif a in ("detail", "resume", "quota", "workers"):
             getattr(self, f"_cmd_{a}")(p.argument)
+        elif a == "dossier":
+            self._history.assistant("Ouverture d'un dossier du PC demandée.")
+            self._open_folder(p.argument)
+        elif a == "voir_dossier":
+            self._show_folder()
+        elif a == "dossier_question":
+            self._ask_folder(p.argument)
+        elif a == "dossier_travail":
+            self._work_folder(p.argument)
+        elif a == "dossier_diff":
+            self._cmd_diff("")
+        elif a == "dossier_appliquer":
+            self._apply_pending()
+        elif a == "dossier_annuler":
+            self._undo_last()
+        elif a == "dossier_fermer":
+            self._close_folder()
         return True
 
     def _privacy_choice(self, choice: str) -> None:
@@ -615,8 +654,14 @@ class App:
         if choice == "local":
             r.revoke("demande de l'utilisateur (conversation)")
             r.asked = True
+            if self.dossier is not None and not self.dossier_local:
+                self.dossier_local = True  # le dossier ouvert aussi : plus aucun envoi de son contenu
             self._say("C'est noté : je te comprends ici, sur ton PC, avec Qwen. Les travaux que tu lances (idées, "
                       "notation) partent toujours vers les agents configurés, et seulement après ton « oui ».")
+            return
+        if self.dossier_local and not (self.personal_lock or (self.profile and self.profile.personal_data)):
+            self._say(f"Pas tant que le dossier « {self.dossier.inv.nom} » est ouvert : tu m'as demandé de le garder "
+                      "sur ton PC. Dis « ferme le dossier » d'abord.")
             return
         if self._personal():
             self._say("Pas possible : on travaille sur des données personnelles, donc tout reste sur ton PC.")
@@ -633,6 +678,8 @@ class App:
         self._ask_consent(provider, route.agent)
 
     def _privacy_line(self) -> str:
+        if self.dossier_local and self.dossier is not None:
+            return f"le dossier « {self.dossier.inv.nom} » reste sur ton PC : rien ne quitte ton PC tant qu'il est ouvert."
         if self._personal():
             return "on travaille sur des données personnelles, rien ne quitte ton PC."
         router = self._ll.reformulator.router
@@ -736,6 +783,7 @@ class App:
             e = self.last_escalation
             lines.append(f"Dernière idée approfondie : {short(e.contract.promesse, 80)} — "
                          f"{'acceptée' if e.accepted else 'refusée'}")
+        lines += self._dossier_state()
         return "\n".join(lines)
 
     def _decisions_of(self, review_id: str) -> dict:

@@ -36,11 +36,19 @@ COMMANDS = {
     "resume": "résumé du dernier résultat (agent du rôle interface)",
     "workers": "lister les workers disponibles",
     "quota": "requêtes Gemini utilisées et restantes aujourd'hui",
+    "dossier": "dossier du PC (lecture seule) : /dossier <chemin> | /dossier choisir | /dossier (voir) | "
+               "/dossier relire | /dossier fermer",
+    "question": "question sur le dossier ouvert : /question <question>",
+    "travail": "proposer des modifications dans le dossier ouvert (rien n'est écrit sans votre oui) : /travail <consigne>",
+    "diff": "afficher en entier les modifications proposées",
+    "appliquer": "écrire dans le dossier les modifications proposées, après confirmation (originaux sauvegardés)",
+    "annuler": "remettre les fichiers comme avant la dernière modification écrite, après confirmation",
     "quitter": "quitter",
 }
 
 ALIASES = {"task": "tache", "tâche": "tache", "help": "aide", "q": "quitter", "exit": "quitter",
-           "quit": "quitter", "org": "organisateur", "doublons": "dedup", "review": "revue", "résumé": "resume", "détail": "detail"}
+           "quit": "quitter", "org": "organisateur", "doublons": "dedup", "review": "revue", "résumé": "resume", "détail": "detail",
+           "folder": "dossier", "apply": "appliquer", "undo": "annuler"}
 
 
 @dataclass(frozen=True)

@@ -135,7 +135,7 @@ class DefaultV3Test(WiringFixture):
         self.assertEqual(c.routed_roles, tuple(ROLES))
         for role, r in c.router.routes.items():
             self.assertEqual((r.agents(), r.source), (["claude_haiku", "qwen"], "défaut"), role)
-        self.assertEqual(c.app_kwargs["role_llms"].keys(), {"interface", "cadrage", "routage"})
+        self.assertEqual(c.app_kwargs["role_llms"].keys(), {"interface", "cadrage", "routage", "dossier"})
         self.assertEqual(c.app_kwargs["format_llm"].role, "dedup")
         self.assertEqual((c.app_kwargs["organizer"], c.app_kwargs["big_model"]), ("agents", "agents"))
         self.assertFalse(any(o.startswith("Agents configurés") for o in self.outputs))
@@ -281,7 +281,7 @@ class DefaultV3Test(WiringFixture):
         self.assertEqual(app.format_llm.role, "dedup")
         self.assertIs(kw["client"].limiter, kw["limiter"])
         self.assertEqual(kw["limiter"].state_path, self.tmp / "gemini_quota.json")
-        self.assertEqual(set(app._role_llms), {"interface", "cadrage", "routage"})
+        self.assertEqual(set(app._role_llms), {"interface", "cadrage", "routage", "dossier"})
         self.assertTrue(any(o.startswith("Attention : Claude indisponible") for o in self.outputs))
 
     def test_build_app_sans_cle_gemini_ni_ollama(self):

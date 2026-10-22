@@ -82,6 +82,10 @@ class RoleInfo:
     accord_session: bool = False
     # Agent local du rôle : repli par défaut, et seul agent utilisé en profil « données personnelles ».
     local_agent: str = "qwen"
+    # Accord DÉDIÉ (V3.2) : l'accord de session global (grant_session_consent_all, conversation,
+    # /accord oui) ne couvre jamais ce rôle ; il lui faut son propre accord, donné explicitement
+    # (rôle « dossier » : une question par dossier ouvert, avant d'envoyer son contenu).
+    accord_dedie: bool = False
 
 
 DEFAULT_AGENT = "claude_haiku"  # V3 : agent par défaut de tous les rôles
@@ -105,12 +109,18 @@ ROLES: Dict[str, RoleInfo] = {r.name: r for r in (
     # Reçoit directement le texte libre : envoi externe seulement après l'accord de session.
     RoleInfo("reformulation", "reformule le texte libre en demande claire", DEFAULT_AGENT,
              free_text=True, accord_session=True),
+    # V3.2 : comprend un dossier du PC, répond à ses questions, propose des modifications (jamais
+    # écrites sans le « oui » de l'utilisateur). Le contenu des fichiers peut contenir n'importe
+    # quoi : accord DÉDIÉ, demandé à chaque dossier ouvert, masquage et contrôle de fuite avant
+    # chaque envoi ; contenu jamais envoyé dehors en profil « données personnelles ».
+    RoleInfo("dossier", "comprend un dossier du PC et propose des modifications", DEFAULT_AGENT,
+             free_text=True, accord_session=True, accord_dedie=True),
 )}
 
 # Rôles qui étaient locaux (Qwen) en V2 : ils voient le texte libre ; leur envoi externe exige
 # la confirmation ou l'accord de session.
 TEXTE_LIBRE_ROLES = ("interface", "cadrage", "routage", "promesse", "format", "dedup", "reparation",
-                     "reformulation")
+                     "reformulation", "dossier")
 
 if tuple(ROLES) != tuple(config.AGENT_ROLES):  # garde-fou : une seule liste de rôles
     raise RuntimeError("agents.ROLES et config.AGENT_ROLES divergent")
@@ -120,6 +130,8 @@ if any(not ROLES[r].free_text for r in TEXTE_LIBRE_ROLES):
 # Garde-fou : l'accord de session ne remplace la confirmation que pour un rôle en texte libre.
 if any(r.accord_session and not r.free_text for r in ROLES.values()):
     raise RuntimeError("accord_session réservé aux rôles en texte libre")
+if any(r.accord_dedie and not r.accord_session for r in ROLES.values()):
+    raise RuntimeError("accord_dedie suppose accord_session")
 # Garde-fou : l'agent local d'un rôle est un agent local intégré (jamais externe).
 if any(r.local_agent not in ("qwen", "qwen_interface", "qwen_format") for r in ROLES.values()):
     raise RuntimeError("l'agent local d'un rôle doit être le Qwen local")
@@ -914,8 +926,8 @@ class AgentRouter:
         """Accord explicite de l'utilisateur pour UN fournisseur, sur tous les rôles à accord de
         session dont un agent relève de ce fournisseur. Retourne ces rôles. Lève PolicyError en
         profil « données personnelles » (avant tout envoi)."""
-        roles = [role for role, info in ROLES.items() if info.accord_session and role in self.routes
-                 and any(self.registry.spec(a).policy_provider == provider for a in self.routes[role].agents())]
+        roles = [role for role, info in ROLES.items() if info.accord_session and not info.accord_dedie
+                 and role in self.routes and any(self.registry.spec(a).policy_provider == provider for a in self.routes[role].agents())]
         for role in roles:
             self.grant_session_consent(role, provider)
         return roles

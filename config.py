@@ -106,6 +106,9 @@ AGENT_ROLES = (
     # Reformule le texte libre en demande claire : accord demandé une fois par session ;
     # AGENT_REFORMULATION=qwen pour tout garder en local.
     "reformulation",
+    # V3.2 : travail sur un dossier du PC (accord dédié par dossier ; AGENT_DOSSIER=qwen pour
+    # que le contenu des fichiers ne quitte jamais la machine).
+    "dossier",
 )
 
 # Anciennes variables (V2, deux modèles Qwen) : ignorées depuis la V3 (un seul modèle, QWEN_MODEL).
@@ -203,6 +206,12 @@ class Settings:
     # avec mémoire des derniers échanges et confirmations « oui / non / correction ».
     # False (MODE_CONVERSATION=0) : langage libre d'avant, à commandes proposées.
     mode_conversation: bool = True
+    # Dossier du PC (V3.2, dossier/) : fichiers parcourus au plus, taille maximale d'un fichier texte
+    # lu (au-delà : listé, jamais lu ni modifié), contenu de fichiers envoyé au plus par appel au rôle
+    # « dossier » (à garder sous le contexte du Qwen local, QWEN_NUM_CTX, pour les replis).
+    dossier_max_fichiers: int = 5000
+    dossier_max_octets_fichier: int = 300_000
+    dossier_budget_caracteres: int = 24_000
 
 
 def load_settings() -> Settings:
@@ -251,4 +260,7 @@ def load_settings() -> Settings:
         feedback_exemples=max(0, _env_int("FEEDBACK_EXEMPLES", d.feedback_exemples)),
         profil_donnees_perso=os.environ.get("PROFIL_DONNEES_PERSO", "").strip() or d.profil_donnees_perso,
         mode_conversation=os.environ.get("MODE_CONVERSATION", "1").strip().lower() not in ("0", "false", "non", "off"),
+        dossier_max_fichiers=max(10, _env_int("DOSSIER_MAX_FICHIERS", d.dossier_max_fichiers)),
+        dossier_max_octets_fichier=max(1000, _env_int("DOSSIER_MAX_OCTETS_FICHIER", d.dossier_max_octets_fichier)),
+        dossier_budget_caracteres=max(2000, _env_int("DOSSIER_BUDGET_CARACTERES", d.dossier_budget_caracteres)),
     )

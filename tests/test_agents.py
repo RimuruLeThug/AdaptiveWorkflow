@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest import mock
 
 import config
+from dossier.analyse import SELECTION_SCHEMA
 from agents import (ROLES, TEXTE_LIBRE_ROLES, Agent, AgentDailyQuota, AgentEmptyResponse, AgentRateLimited, AgentRegistry,
                     AgentRouter,
                     AgentSchemaError, AgentSpec, AgentTimeout, AgentUnavailable, ClaudeAgent,
@@ -80,7 +81,8 @@ def fake_registry(**answers):
 V2_ROLES = (("organisateur", "gemini"), ("worker", "gemini"), ("relecteur", "gemini"), ("grand_modele", "gemini"),
             ("interface", "qwen_interface"), ("cadrage", "qwen_interface"), ("routage", "qwen_interface"),
             ("promesse", "qwen_interface"), ("format", "qwen_format"), ("dedup", "qwen_format"),
-            ("reparation", "qwen_format"), ("reformulation", "gemini"))
+            ("reparation", "qwen_format"), ("reformulation", "gemini"),
+            ("dossier", "qwen_interface"))  # V3.2 : pas d'équivalent V2, posé en local pour ces tests
 
 
 def settings(v3=False, **kw):
@@ -294,7 +296,9 @@ class SessionConsentAllTest(unittest.TestCase):
         reg, fakes = fake_registry(claude_haiku=["a", "b"])
         router = router_for(reg, settings(v3=True), confirm=lambda p: self_fail())
         roles = router.grant_session_consent_all("claude")
-        self.assertEqual(roles, list(TEXTE_LIBRE_ROLES))
+        # V3.2 : le rôle « dossier » a un accord dédié, jamais couvert par l'accord global.
+        self.assertEqual(roles, [r for r in TEXTE_LIBRE_ROLES if r != "dossier"])
+        self.assertFalse(router.has_session_consent("dossier", "claude"))
         self.assertEqual(router.call("routage", "salut").agent, "claude_haiku")  # sans confirmation par envoi
         self.assertEqual(router.call("cadrage", "projet").agent, "claude_haiku")
         self.assertFalse(router.has_session_consent("routage", "gemini"))  # un seul fournisseur
@@ -636,7 +640,8 @@ class GeminiTestInQwenRolesTest(GeminiFixture):
                  ("cadrage", FICHE_SCHEMA, '{"objectif": "o", "contraintes": [], "perimetre": [], '
                                            '"hors_perimetre": []}'),
                  ("promesse", PROMISE_SCHEMA, promise), ("format", GROUPS_SCHEMA, groups),
-                 ("dedup", GROUPS_SCHEMA, groups), ("reparation", PROMISE_SCHEMA, promise)]
+                 ("dedup", GROUPS_SCHEMA, groups), ("reparation", PROMISE_SCHEMA, promise),
+                 ("dossier", SELECTION_SCHEMA, '{"fichiers": ["README.md"], "raison": "r"}')]
         self.assertEqual({c[0] for c in cases}, set(TEXTE_LIBRE_ROLES) - {"reformulation"})
         for role, schema, answer in cases:
             with self.subTest(role=role):
@@ -907,7 +912,7 @@ class FreeTextDerivedTest(GeminiFixture):
     def test_tout_role_qwen_exige_confirmation(self):
         qwen_roles = [r for r in TEXTE_LIBRE_ROLES if r != "reformulation"]
         self.assertEqual(set(qwen_roles), {"interface", "cadrage", "routage", "promesse", "format", "dedup",
-                                           "reparation"})
+                                           "reparation", "dossier"})
         for role in qwen_roles:
             with self.subTest(role=role):
                 self.assertTrue(ROLES[role].free_text)
